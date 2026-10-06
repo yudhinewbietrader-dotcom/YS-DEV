@@ -7,9 +7,9 @@ export default function ImportPage() {
       <section className="panel hero">
         <h1>Impor & sinkron SIPP</h1>
         <p style={{ color: "var(--ink)" }}>
-          Hanya data publik. Gunakan <strong>Sinkron BHT</strong> untuk bulk-impor perkara
-          final dalam satu klik. Jika SIPP memblokir atau struktur HTML berubah, andalkan
-          impor CSV/JSON + pengodean manual dari salinan putusan berizin.
+          Utamakan <strong>Sinkron SIPP Lokal</strong> (MySQL/MariaDB satker) untuk data BHT
+          lebih akurat. Cadangan: Sinkron BHT publik atau impor CSV/JSON + koding manual dari
+          salinan putusan berizin.
         </p>
       </section>
       <SippImportPanel />

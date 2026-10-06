@@ -110,6 +110,32 @@ function migrate(db: Database.Database) {
       value TEXT NOT NULL
     );
   `);
+
+  // Kolom tambahan untuk sinkron SIPP lokal (idempotent)
+  const extraCols: Array<[string, string]> = [
+    ["sipp_perkara_id", "INTEGER"],
+    ["tanggal_putusan", "TEXT"],
+    ["tanggal_minutasi", "TEXT"],
+    ["tanggal_bht", "TEXT"],
+    ["tahapan_text", "TEXT"],
+    ["proses_text", "TEXT"],
+    ["putusan_verstek", "TEXT"],
+    ["status_putusan", "TEXT"],
+    ["amar_excerpt", "TEXT"],
+    ["nomor_akta_cerai", "TEXT"],
+    ["tgl_akta_cerai", "TEXT"],
+    ["sipp_local_json", "TEXT"],
+  ];
+  const existing = new Set(
+    (
+      db.prepare("PRAGMA table_info(cases)").all() as Array<{ name: string }>
+    ).map((c) => c.name),
+  );
+  for (const [name, type] of extraCols) {
+    if (!existing.has(name)) {
+      db.exec(`ALTER TABLE cases ADD COLUMN ${name} ${type}`);
+    }
+  }
 }
 
 export type CaseRow = {
@@ -140,6 +166,18 @@ export type CaseRow = {
   coding_status: string;
   created_at: string;
   updated_at: string;
+  sipp_perkara_id?: number | null;
+  tanggal_putusan?: string | null;
+  tanggal_minutasi?: string | null;
+  tanggal_bht?: string | null;
+  tahapan_text?: string | null;
+  proses_text?: string | null;
+  putusan_verstek?: string | null;
+  status_putusan?: string | null;
+  amar_excerpt?: string | null;
+  nomor_akta_cerai?: string | null;
+  tgl_akta_cerai?: string | null;
+  sipp_local_json?: string | null;
 };
 
 export type InformantRow = {

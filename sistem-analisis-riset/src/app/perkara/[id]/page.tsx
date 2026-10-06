@@ -60,6 +60,55 @@ export default async function CaseDetailPage({ params }: Props) {
           </p>
         ) : null}
       </section>
+
+      {(row.tanggal_bht ||
+        row.amar_excerpt ||
+        row.tahapan_text ||
+        row.nomor_akta_cerai ||
+        row.sipp_perkara_id) && (
+        <section className="panel">
+          <h2>Data SIPP lokal (read-only sync)</h2>
+          <div className="grid-2">
+            <div>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                ID perkara: <span className="mono">{row.sipp_perkara_id ?? "—"}</span>
+              </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Tahapan: {row.tahapan_text || "—"}
+              </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Proses: {row.proses_text || "—"}
+              </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Verstek: {row.putusan_verstek || "—"} · Status putusan:{" "}
+                {row.status_putusan || "—"}
+              </p>
+            </div>
+            <div>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Tgl putusan: <span className="mono">{row.tanggal_putusan || "—"}</span>
+              </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Tgl minutasi: <span className="mono">{row.tanggal_minutasi || "—"}</span>
+              </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Tgl BHT: <span className="mono">{row.tanggal_bht || "—"}</span>
+              </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Akta cerai: {row.nomor_akta_cerai || "—"} (
+                <span className="mono">{row.tgl_akta_cerai || "—"}</span>)
+              </p>
+            </div>
+          </div>
+          {row.amar_excerpt ? (
+            <>
+              <div className="block-title">Cuplikan amar putusan</div>
+              <p style={{ color: "var(--ink)", whiteSpace: "pre-wrap" }}>{row.amar_excerpt}</p>
+            </>
+          ) : null}
+        </section>
+      )}
+
       <section className="panel">
         <CaseCodingForm id={row.id} initial={initial} />
       </section>

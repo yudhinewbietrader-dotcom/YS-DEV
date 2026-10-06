@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 
 type Item = {
@@ -17,39 +17,55 @@ type SyncResult = {
   imported: number;
   updated: number;
   skippedDuplicates: number;
-  skippedNonBht: number;
-  truncated: boolean;
+  skippedNonBht?: number;
+  truncated?: boolean;
   note?: string;
-  queries?: Array<{
-    query: string;
-    pagesFetched: number;
-    rowsScanned: number;
-    totalReported: number | null;
-    truncated: boolean;
-  }>;
   samples?: Array<{
     nomor_perkara: string;
-    jenis_perkara: string;
-    status_perkara: string;
+    jenis_perkara: string | null;
+    status_perkara: string | null;
+    tanggal_bht?: string | null;
     action: string;
   }>;
+};
+
+type LocalStatus = {
+  configured: boolean;
+  host: string | null;
+  database: string;
+  port: number;
+  probe: { ok: boolean; sampleCount?: number; error?: string };
 };
 
 export function SippImportPanel() {
   const [keyword, setKeyword] = useState("Cerai Gugat");
   const [bhtKeywords, setBhtKeywords] = useState("Cerai Gugat, Cerai Talak");
+  const [localKeywords, setLocalKeywords] = useState("Cerai Gugat, Cerai Talak");
   const [dateFrom, setDateFrom] = useState("01 Jan 2024");
   const [dateTo, setDateTo] = useState("");
+  const [localDateFrom, setLocalDateFrom] = useState("2024-01-01");
+  const [localDateTo, setLocalDateTo] = useState("");
   const [maxPages, setMaxPages] = useState(8);
+  const [localLimit, setLocalLimit] = useState(500);
   const [nomor, setNomor] = useState("");
   const [items, setItems] = useState<Item[]>([]);
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [localBusy, setLocalBusy] = useState(false);
   const [savedLink, setSavedLink] = useState("");
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [localResult, setLocalResult] = useState<SyncResult | null>(null);
   const [progressHint, setProgressHint] = useState("");
+  const [localStatus, setLocalStatus] = useState<LocalStatus | null>(null);
+
+  useEffect(() => {
+    fetch("/api/sipp/sync-local")
+      .then((r) => r.json())
+      .then((d) => setLocalStatus(d))
+      .catch(() => setLocalStatus(null));
+  }, []);
 
   async function search(e: FormEvent) {
     e.preventDefault();
@@ -69,6 +85,42 @@ export function SippImportPanel() {
     }
     setItems(data.items || []);
     setMsg(`Ditemukan ${data.count} baris dari SIPP publik (halaman hasil pencarian).`);
+  }
+
+  async function syncLocal(e: FormEvent) {
+    e.preventDefault();
+    setLocalBusy(true);
+    setError("");
+    setMsg("");
+    setLocalResult(null);
+    setProgressHint("Mengambil data dari MariaDB/MySQL SIPP lokal (read-only)…");
+    const res = await fetch("/api/sipp/sync-local", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keywords: localKeywords,
+        dateFrom: localDateFrom || null,
+        dateTo: localDateTo || null,
+        onlyBht: true,
+        limit: localLimit,
+        refreshExisting: true,
+      }),
+    });
+    const data = await res.json();
+    setLocalBusy(false);
+    setProgressHint("");
+    if (!res.ok) {
+      setError(`${data.error || "Sinkron lokal gagal"} ${data.hint || ""}`);
+      return;
+    }
+    setLocalResult(data);
+    setMsg(
+      `Sinkron SIPP lokal selesai: ditemukan ${data.found}, diimpor baru ${data.imported}, diperbarui ${data.updated}, duplikat ${data.skippedDuplicates}.`,
+    );
+    fetch("/api/sipp/sync-local")
+      .then((r) => r.json())
+      .then((d) => setLocalStatus(d))
+      .catch(() => null);
   }
 
   async function syncBht(e: FormEvent) {
@@ -100,7 +152,7 @@ export function SippImportPanel() {
     }
     setSyncResult(data);
     setMsg(
-      `Sinkron BHT selesai: ditemukan ${data.found}, diimpor baru ${data.imported}, diperbarui ${data.updated}, duplikat/dilewati ${data.skippedDuplicates}.`,
+      `Sinkron BHT publik selesai: ditemukan ${data.found}, diimpor baru ${data.imported}, diperbarui ${data.updated}, duplikat/dilewati ${data.skippedDuplicates}.`,
     );
   }
 
@@ -160,6 +212,8 @@ export function SippImportPanel() {
     setMsg(`Impor selesai: ${data.inserted} baru, ${data.updated} diperbarui.`);
   }
 
+  const anyBusy = busy || syncBusy || localBusy;
+
   return (
     <div>
       {error ? <div className="flash error">{error}</div> : null}
@@ -167,20 +221,140 @@ export function SippImportPanel() {
         <div className="flash ok">
           {msg}{" "}
           {savedLink ? <Link href={savedLink}>Buka koding →</Link> : null}{" "}
-          {syncResult ? <Link href="/perkara">Lihat workspace berkas →</Link> : null}
+          {syncResult || localResult ? (
+            <Link href="/perkara">Lihat workspace berkas →</Link>
+          ) : null}
         </div>
       ) : null}
       {progressHint ? <div className="flash info">{progressHint}</div> : null}
 
       <section className="panel hero">
-        <h2>Sinkron BHT (satu klik)</h2>
+        <h2>Sinkron SIPP Lokal (MySQL/MariaDB)</h2>
         <p style={{ color: "var(--ink)" }}>
-          Ambil perkara yang status publiknya menandakan sudah final/BHT (termasuk variasi
-          teks dan proxy <em>Pembuatan/Penyerahan Akta Cerai</em> di SIPP PA Sambas), lalu{" "}
-          <strong>bulk-impor</strong> ke workspace koding — tanpa klik Simpan per baris.
+          Ambil perkara BHT/final langsung dari database SIPP satker (skema{" "}
+          <span className="mono">sipp32</span>) — lebih kaya dari portal publik: tanggal_bht,
+          tahapan/proses, verstek, cuplikan amar, akta cerai. Nama pihak tetap disamarkan.
+        </p>
+        {localStatus ? (
+          <p className="muted">
+            Status koneksi:{" "}
+            {localStatus.probe?.ok ? (
+              <span className="badge ok">
+                terhubung · {localStatus.host}/{localStatus.database} ·{" "}
+                {localStatus.probe.sampleCount?.toLocaleString("id-ID")} perkara
+              </span>
+            ) : (
+              <span className="badge warn">
+                belum siap — {localStatus.probe?.error || "isi SIPP_DB_* di .env.local"}
+              </span>
+            )}
+          </p>
+        ) : (
+          <p className="muted">Memeriksa konfigurasi SIPP_DB_*…</p>
+        )}
+        <form onSubmit={syncLocal}>
+          <label>Kata kunci (jenis perkara / nomor — pisahkan koma)</label>
+          <input
+            value={localKeywords}
+            onChange={(e) => setLocalKeywords(e.target.value)}
+            placeholder="Cerai Gugat, Cerai Talak"
+            required
+          />
+          <div className="grid-2">
+            <div>
+              <label>Tanggal pendaftaran dari</label>
+              <input
+                value={localDateFrom}
+                onChange={(e) => setLocalDateFrom(e.target.value)}
+                placeholder="2024-01-01"
+              />
+            </div>
+            <div>
+              <label>Tanggal pendaftaran sampai</label>
+              <input
+                value={localDateTo}
+                onChange={(e) => setLocalDateTo(e.target.value)}
+                placeholder="kosong = tanpa batas"
+              />
+            </div>
+          </div>
+          <label>Batas jumlah perkara (LIMIT)</label>
+          <input
+            type="number"
+            min={1}
+            max={2000}
+            value={localLimit}
+            onChange={(e) => setLocalLimit(Number(e.target.value) || 500)}
+          />
+          <p className="muted">
+            Filter BHT: perkara_putusan.tanggal_bht tidak kosong, atau ada
+            perkara_akta_cerai, atau proses terakhir mengandung Akta Cerai/BHT/Berkekuatan.
+            Hanya SELECT.
+          </p>
+          <div className="actions">
+            <button className="btn" type="submit" disabled={anyBusy}>
+              {localBusy ? "Menyinkronkan lokal…" : "Sinkron SIPP Lokal"}
+            </button>
+            <Link className="btn ghost" href="/perkara">
+              Buka daftar berkas
+            </Link>
+          </div>
+        </form>
+        {localResult ? (
+          <div style={{ marginTop: "1rem" }}>
+            <div className="grid-3">
+              <div className="stat">
+                <strong>{localResult.found}</strong>
+                <span>Ditemukan</span>
+              </div>
+              <div className="stat">
+                <strong>{localResult.imported}</strong>
+                <span>Diimpor baru</span>
+              </div>
+              <div className="stat">
+                <strong>{localResult.skippedDuplicates}</strong>
+                <span>Duplikat / sudah ada</span>
+              </div>
+            </div>
+            {localResult.samples?.length ? (
+              <table className="data" style={{ marginTop: "0.75rem" }}>
+                <thead>
+                  <tr>
+                    <th>Nomor</th>
+                    <th>Jenis</th>
+                    <th>Status</th>
+                    <th>tgl BHT</th>
+                    <th>Aksi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {localResult.samples.map((s) => (
+                    <tr key={s.nomor_perkara + s.action}>
+                      <td className="mono">{s.nomor_perkara}</td>
+                      <td>{s.jenis_perkara}</td>
+                      <td>{s.status_perkara}</td>
+                      <td className="mono">{s.tanggal_bht || "—"}</td>
+                      <td>
+                        <span className="badge">{s.action}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+            {localResult.note ? <p className="muted">{localResult.note}</p> : null}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="panel">
+        <h2>Sinkron BHT publik (cadangan web)</h2>
+        <p className="muted">
+          Fallback jika DB lokal tidak tersedia. Lihat batasan teks status publik di
+          dokumentasi.
         </p>
         <form onSubmit={syncBht}>
-          <label>Kata kunci (pisahkan koma — jenis perkara yang Anda teliti)</label>
+          <label>Kata kunci (pisahkan koma)</label>
           <input
             value={bhtKeywords}
             onChange={(e) => setBhtKeywords(e.target.value)}
@@ -193,7 +367,7 @@ export function SippImportPanel() {
               <input
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
-                placeholder="01 Jan 2024 atau 01/01/2024"
+                placeholder="01 Jan 2024"
               />
             </div>
             <div>
@@ -205,9 +379,7 @@ export function SippImportPanel() {
               />
             </div>
           </div>
-          <label>
-            Maks. halaman per kueri SIPP (20 perkara/halaman; default 8 ≈ 160 baris/kueri)
-          </label>
+          <label>Maks. halaman per kueri SIPP publik</label>
           <input
             type="number"
             min={1}
@@ -215,21 +387,12 @@ export function SippImportPanel() {
             value={maxPages}
             onChange={(e) => setMaxPages(Number(e.target.value) || 8)}
           />
-          <p className="muted">
-            Sistem juga mencari otomatis “Pembuatan/Penyerahan Akta Cerai” lalu memfilter
-            jenis perkara sesuai kata kunci Anda. Rate limit + User-Agent sopan tetap berlaku.
-            SIPP publik jarang menulis teks “BHT” harfiah.
-          </p>
           <div className="actions">
-            <button className="btn" type="submit" disabled={syncBusy || busy}>
-              {syncBusy ? "Menyinkronkan BHT…" : "Sinkron BHT ke workspace"}
+            <button className="btn secondary" type="submit" disabled={anyBusy}>
+              {syncBusy ? "Menyinkronkan BHT publik…" : "Sinkron BHT (publik)"}
             </button>
-            <Link className="btn ghost" href="/perkara">
-              Buka daftar berkas
-            </Link>
           </div>
         </form>
-
         {syncResult ? (
           <div style={{ marginTop: "1rem" }}>
             <div className="grid-3">
@@ -246,61 +409,6 @@ export function SippImportPanel() {
                 <span>Duplikat / sudah ada</span>
               </div>
             </div>
-            {syncResult.truncated ? (
-              <p className="flash info" style={{ marginTop: "0.75rem" }}>
-                Hasil terpotong karena batas halaman. Naikkan “Maks. halaman” untuk memindai
-                lebih banyak (lebih lama).
-              </p>
-            ) : null}
-            {syncResult.queries?.length ? (
-              <table className="data" style={{ marginTop: "0.75rem" }}>
-                <thead>
-                  <tr>
-                    <th>Kueri SIPP</th>
-                    <th>Halaman</th>
-                    <th>Baris dipindai</th>
-                    <th>Total SIPP</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {syncResult.queries.map((q) => (
-                    <tr key={q.query}>
-                      <td>{q.query}</td>
-                      <td>{q.pagesFetched}</td>
-                      <td>{q.rowsScanned}</td>
-                      <td>
-                        {q.totalReported ?? "—"}
-                        {q.truncated ? " (trunc.)" : ""}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : null}
-            {syncResult.samples?.length ? (
-              <table className="data" style={{ marginTop: "0.75rem" }}>
-                <thead>
-                  <tr>
-                    <th>Contoh nomor</th>
-                    <th>Jenis</th>
-                    <th>Status</th>
-                    <th>Aksi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {syncResult.samples.map((s) => (
-                    <tr key={s.nomor_perkara + s.action}>
-                      <td className="mono">{s.nomor_perkara}</td>
-                      <td>{s.jenis_perkara}</td>
-                      <td>{s.status_perkara}</td>
-                      <td>
-                        <span className="badge">{s.action}</span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : null}
             {syncResult.note ? <p className="muted">{syncResult.note}</p> : null}
           </div>
         ) : null}
@@ -308,16 +416,11 @@ export function SippImportPanel() {
 
       <section className="panel">
         <h2>1. Cari di SIPP publik (manual)</h2>
-        <p className="muted">
-          POST ke <span className="mono">/list_perkara/search</span> pada{" "}
-          <span className="mono">https://sipp.pa-sambas.go.id</span> — User-Agent jelas +
-          jeda antar permintaan.
-        </p>
         <form onSubmit={search}>
-          <label>Kata kunci (mis. Cerai Gugat, Cerai Talak, nomor perkara)</label>
+          <label>Kata kunci</label>
           <input value={keyword} onChange={(e) => setKeyword(e.target.value)} />
           <div className="actions">
-            <button className="btn secondary" disabled={busy || syncBusy}>
+            <button className="btn secondary" disabled={anyBusy}>
               Cari SIPP
             </button>
           </div>
@@ -334,7 +437,7 @@ export function SippImportPanel() {
             placeholder="contoh: 1212/Pdt.G/2026/PA.Sbs"
           />
           <div className="actions">
-            <button className="btn secondary" disabled={busy || syncBusy}>
+            <button className="btn secondary" disabled={anyBusy}>
               Fetch & simpan
             </button>
           </div>
@@ -365,7 +468,7 @@ export function SippImportPanel() {
                     <button
                       className="btn ghost"
                       type="button"
-                      disabled={busy || syncBusy}
+                      disabled={anyBusy}
                       onClick={() => saveItem(it)}
                     >
                       Simpan
@@ -379,18 +482,12 @@ export function SippImportPanel() {
       ) : null}
 
       <section className="panel">
-        <h2>3. Impor CSV / JSON (jalur utama cadangan)</h2>
-        <p className="muted">
-          Kolom disarankan:{" "}
-          <span className="mono">
-            nomor_perkara,jenis_perkara,tanggal_register,status_perkara,para_pihak,sipp_detail_url,tahun
-          </span>
-        </p>
+        <h2>3. Impor CSV / JSON (cadangan)</h2>
         <form onSubmit={uploadFile}>
           <label>File .csv atau .json</label>
           <input type="file" name="file" accept=".csv,.json,text/csv,application/json" required />
           <div className="actions">
-            <button className="btn" disabled={busy || syncBusy}>
+            <button className="btn" disabled={anyBusy}>
               Unggah & impor
             </button>
           </div>

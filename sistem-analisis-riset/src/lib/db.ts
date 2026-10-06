@@ -125,6 +125,8 @@ function migrate(db: Database.Database) {
     ["nomor_akta_cerai", "TEXT"],
     ["tgl_akta_cerai", "TEXT"],
     ["sipp_local_json", "TEXT"],
+    /** Usulan modus otomatis (JSON ModusDetectResult) — tidak menimpa koding coded */
+    ["modus_suggestions_json", "TEXT"],
   ];
   const existing = new Set(
     (
@@ -178,6 +180,7 @@ export type CaseRow = {
   nomor_akta_cerai?: string | null;
   tgl_akta_cerai?: string | null;
   sipp_local_json?: string | null;
+  modus_suggestions_json?: string | null;
 };
 
 export type InformantRow = {

@@ -42,6 +42,7 @@ Baca langsung MariaDB/MySQL satker (skema `sipp32`) lewat env **WA-gateway**:
 
 Tombol UI: **Sinkron SIPP Lokal** di `/perkara/impor`.
 
+Setelah sync, **usulan modus** otomatis (heuristik dari amar/verstek/pekerjaan) — bukan koding final. Tombol **Deteksi modus** di `/perkara` dan form koding.
 ### B. SIPP publik (cadangan)
 
 - **Base URL publik:** https://sipp.pa-sambas.go.id/

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ResearchShell } from "@/components/ResearchShell";
 import { CaseCodingForm } from "@/components/CaseCodingForm";
 import { getDb, parseJsonArray, parseJsonObject, type CaseRow } from "@/lib/db";
+import { parseModusSuggestions } from "@/lib/modus-detect";
 import { ensureSeeded } from "@/lib/seed";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,8 @@ export default async function CaseDetailPage({ params }: Props) {
   const db = getDb();
   const row = db.prepare("SELECT * FROM cases WHERE id = ?").get(id) as CaseRow | undefined;
   if (!row) notFound();
+
+  const suggestions = parseModusSuggestions(row.modus_suggestions_json);
 
   const initial = {
     nomor_perkara: row.nomor_perkara,
@@ -40,6 +43,15 @@ export default async function CaseDetailPage({ params }: Props) {
     sipp_detail_url: row.sipp_detail_url,
     sumber: row.sumber,
   };
+
+  let localExtra: Record<string, unknown> = {};
+  try {
+    localExtra = row.sipp_local_json
+      ? (JSON.parse(row.sipp_local_json) as Record<string, unknown>)
+      : {};
+  } catch {
+    localExtra = {};
+  }
 
   return (
     <ResearchShell>
@@ -83,6 +95,18 @@ export default async function CaseDetailPage({ params }: Props) {
                 Verstek: {row.putusan_verstek || "—"} · Status putusan:{" "}
                 {row.status_putusan || "—"}
               </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Pekerjaan pihak1:{" "}
+                {typeof localExtra.pekerjaan_pihak1 === "string"
+                  ? localExtra.pekerjaan_pihak1
+                  : "—"}
+              </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Pekerjaan pihak2:{" "}
+                {typeof localExtra.pekerjaan_pihak2 === "string"
+                  ? localExtra.pekerjaan_pihak2
+                  : "—"}
+              </p>
             </div>
             <div>
               <p className="muted" style={{ marginBottom: "0.35rem" }}>
@@ -110,7 +134,11 @@ export default async function CaseDetailPage({ params }: Props) {
       )}
 
       <section className="panel">
-        <CaseCodingForm id={row.id} initial={initial} />
+        <CaseCodingForm
+          id={row.id}
+          initial={initial}
+          initialSuggestions={suggestions}
+        />
       </section>
     </ResearchShell>
   );

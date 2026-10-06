@@ -11,20 +11,44 @@ import {
   STATUS_PEKERJAAN,
 } from "@/lib/coding-taxonomy";
 
+type Suggestion = {
+  id: string;
+  label: string;
+  confidence: "low" | "med";
+  evidence: string;
+  field: string;
+};
+
+type SuggestionsBundle = {
+  suggestions: Suggestion[];
+  empty_reason: string | null;
+  detected_at?: string;
+  source?: string;
+} | null;
+
 type Props = {
   id?: number;
   initial?: Record<string, unknown>;
+  initialSuggestions?: SuggestionsBundle;
 };
 
 function toggle(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
 }
 
-export function CaseCodingForm({ id, initial = {} }: Props) {
+export function CaseCodingForm({
+  id,
+  initial = {},
+  initialSuggestions = null,
+}: Props) {
   const router = useRouter();
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [suggestions, setSuggestions] = useState<SuggestionsBundle>(
+    initialSuggestions,
+  );
 
   const [nomor_perkara, setNomor] = useState(String(initial.nomor_perkara || ""));
   const [jenis_perkara, setJenis] = useState(String(initial.jenis_perkara || ""));
@@ -109,10 +133,63 @@ export function CaseCodingForm({ id, initial = {} }: Props) {
     }
   }
 
+  async function redetectModus() {
+    if (!id) return;
+    setDetecting(true);
+    setError("");
+    setMsg("");
+    const res = await fetch("/api/cases/detect-modus", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caseId: id }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setDetecting(false);
+    if (!res.ok) {
+      setError(data.error || "Deteksi gagal");
+      return;
+    }
+    setSuggestions({
+      suggestions: data.suggestions || [],
+      empty_reason: data.empty_reason || null,
+      detected_at: new Date().toISOString(),
+      source: "case_redetect",
+    });
+    if (!data.skippedConfirmed && Array.isArray(data.suggestions)) {
+      const ids = data.suggestions.map((s: Suggestion) => s.id);
+      if (ids.length && modus.length === 0) setModus(ids);
+    }
+    setMsg(
+      data.suggestions?.length
+        ? `Usulan: ${data.suggestions.length} modus. ${data.skippedConfirmed ? "(koding terkonfirmasi tidak ditimpa)" : "Dapat diterima ke checklist."}`
+        : data.empty_reason || "Belum terdeteksi.",
+    );
+    router.refresh();
+  }
+
+  function acceptSuggestion(sid: string) {
+    setModus((prev) => (prev.includes(sid) ? prev : [...prev, sid]));
+  }
+
+  function acceptAllSuggestions() {
+    const ids = suggestions?.suggestions?.map((s) => s.id) || [];
+    setModus((prev) => [...new Set([...prev, ...ids])]);
+  }
+
+  const suggestionList = suggestions?.suggestions || [];
+
   return (
     <form onSubmit={onSubmit}>
       {error ? <div className="flash error">{error}</div> : null}
       {msg ? <div className="flash ok">{msg}</div> : null}
+
+      <div className="flash info" style={{ marginBottom: "1rem" }}>
+        Sinkron SIPP mengimpor <strong>metadata</strong> perkara (status, BHT, verstek,
+        cuplikan amar, pekerjaan pihak). Modus asimetri dapat diisi lewat{" "}
+        <strong>usulan otomatis (heuristik)</strong> — bukan klasifikasi final. Periksa
+        bukti, lalu konfirmasi manual. Modus seperti tadlis/PMI sering butuh teks putusan
+        lengkap.
+      </div>
 
       <div className="grid-2">
         <div>
@@ -180,8 +257,76 @@ export function CaseCodingForm({ id, initial = {} }: Props) {
               onChange={() => setModus(toggle(modus, o.id))}
             />
             {o.label}
+            {suggestionList.some((s) => s.id === o.id) ? (
+              <span className="badge warn" style={{ marginLeft: 6 }}>
+                usulan
+              </span>
+            ) : null}
           </label>
         ))}
+      </div>
+
+      <div className="panel" style={{ marginTop: "0.75rem", padding: "0.85rem 1rem" }}>
+        <div className="block-title" style={{ marginTop: 0 }}>
+          Usulan otomatis (heuristik SIPP)
+        </div>
+        {id ? (
+          <div className="actions" style={{ marginBottom: "0.5rem" }}>
+            <button
+              className="btn secondary"
+              type="button"
+              disabled={detecting || saving}
+              onClick={() => redetectModus()}
+            >
+              {detecting ? "Mendeteksi…" : "Deteksi ulang modus"}
+            </button>
+            {suggestionList.length > 0 ? (
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => acceptAllSuggestions()}
+              >
+                Terima semua usulan
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <p className="muted">Simpan berkas dulu untuk menjalankan deteksi.</p>
+        )}
+
+        {suggestionList.length > 0 ? (
+          <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.1rem" }}>
+            {suggestionList.map((s) => (
+              <li key={s.id} style={{ marginBottom: "0.45rem" }}>
+                <strong>{s.label}</strong>{" "}
+                <span className={`badge ${s.confidence === "med" ? "ok" : "warn"}`}>
+                  {s.confidence}
+                </span>{" "}
+                <span className="muted mono">({s.field})</span>
+                <div className="muted" style={{ fontSize: "0.9rem" }}>
+                  “{s.evidence}”
+                </div>
+                {!modus.includes(s.id) ? (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    style={{ marginTop: 4 }}
+                    onClick={() => acceptSuggestion(s.id)}
+                  >
+                    Terima
+                  </button>
+                ) : (
+                  <span className="badge ok">di checklist</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted" style={{ marginBottom: 0 }}>
+            {suggestions?.empty_reason ||
+              "belum terdeteksi — lengkapi manual / unggah putusan"}
+          </p>
+        )}
       </div>
 
       <div className="block-title">Respons hakim</div>

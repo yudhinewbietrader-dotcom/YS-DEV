@@ -48,6 +48,10 @@ export type SippLocalCase = {
   tgl_akta_cerai: string | null;
   tgl_penyerahan_akta_cerai: string | null;
   jenis_cerai: string | null;
+  /** Pekerjaan pihak1 (penggugat/pemohon) dari tabel pihak — untuk heuristik modus */
+  pekerjaan_pihak1: string | null;
+  /** Pekerjaan pihak2 (tergugat/termohon) */
+  pekerjaan_pihak2: string | null;
 };
 
 const globalForSipp = globalThis as unknown as {
@@ -304,7 +308,23 @@ export async function searchSippLocalBht(opts: {
       ac.nomor_akta_cerai,
       ac.tgl_akta_cerai,
       ac.tgl_penyerahan_akta_cerai,
-      ac.jenis_cerai
+      ac.jenis_cerai,
+      (
+        SELECT ph.pekerjaan
+        FROM perkara_pihak1 pp1
+        JOIN pihak ph ON ph.id = pp1.pihak_id
+        WHERE pp1.perkara_id = p.perkara_id
+        ORDER BY pp1.urutan ASC, pp1.id ASC
+        LIMIT 1
+      ) AS pekerjaan_pihak1,
+      (
+        SELECT ph.pekerjaan
+        FROM perkara_pihak2 pp2
+        JOIN pihak ph ON ph.id = pp2.pihak_id
+        WHERE pp2.perkara_id = p.perkara_id
+        ORDER BY pp2.urutan ASC, pp2.id ASC
+        LIMIT 1
+      ) AS pekerjaan_pihak2
     FROM perkara p
     LEFT JOIN perkara_putusan pp ON pp.perkara_id = p.perkara_id
     LEFT JOIN perkara_akta_cerai ac ON ac.perkara_id = p.perkara_id
@@ -343,5 +363,7 @@ export async function searchSippLocalBht(opts: {
       ? String(r.tgl_penyerahan_akta_cerai)
       : null,
     jenis_cerai: r.jenis_cerai ? String(r.jenis_cerai) : null,
+    pekerjaan_pihak1: r.pekerjaan_pihak1 ? String(r.pekerjaan_pihak1) : null,
+    pekerjaan_pihak2: r.pekerjaan_pihak2 ? String(r.pekerjaan_pihak2) : null,
   }));
 }

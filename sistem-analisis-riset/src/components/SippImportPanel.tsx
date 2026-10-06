@@ -20,12 +20,20 @@ type SyncResult = {
   skippedNonBht?: number;
   truncated?: boolean;
   note?: string;
+  modusDetect?: {
+    scanned: number;
+    withSuggestions: number;
+    withoutSignal: number;
+    softApplied: number;
+    skippedConfirmed: number;
+  };
   samples?: Array<{
     nomor_perkara: string;
     jenis_perkara: string | null;
     status_perkara: string | null;
     tanggal_bht?: string | null;
     action: string;
+    modus_suggested?: string[];
   }>;
 };
 
@@ -114,8 +122,13 @@ export function SippImportPanel() {
       return;
     }
     setLocalResult(data);
+    const md = data.modusDetect;
     setMsg(
-      `Sinkron SIPP lokal selesai: ditemukan ${data.found}, diimpor baru ${data.imported}, diperbarui ${data.updated}, duplikat ${data.skippedDuplicates}.`,
+      `Sinkron SIPP lokal selesai: ditemukan ${data.found}, diimpor baru ${data.imported}, diperbarui ${data.updated}` +
+        (md
+          ? ` · usulan modus: ${md.withSuggestions}/${md.scanned} perkara, tanpa sinyal ${md.withoutSignal}`
+          : "") +
+        ".",
     );
     fetch("/api/sipp/sync-local")
       .then((r) => r.json())
@@ -232,8 +245,10 @@ export function SippImportPanel() {
         <h2>Sinkron SIPP Lokal (MySQL/MariaDB)</h2>
         <p style={{ color: "var(--ink)" }}>
           Ambil perkara BHT/final langsung dari database SIPP satker (skema{" "}
-          <span className="mono">sipp32</span>) — lebih kaya dari portal publik: tanggal_bht,
-          tahapan/proses, verstek, cuplikan amar, akta cerai. Nama pihak tetap disamarkan.
+          <span className="mono">sipp32</span>) — metadata: tanggal_bht, tahapan/proses,
+          verstek, cuplikan amar, akta cerai, pekerjaan pihak. Setelah sync, sistem
+          menjalankan <strong>usulan otomatis modus</strong> (heuristik) — bukan koding
+          final; konfirmasi di workspace. Nama pihak tetap disamarkan.
         </p>
         {localStatus ? (
           <p className="muted">
@@ -312,10 +327,26 @@ export function SippImportPanel() {
                 <span>Diimpor baru</span>
               </div>
               <div className="stat">
-                <strong>{localResult.skippedDuplicates}</strong>
-                <span>Duplikat / sudah ada</span>
+                <strong>{localResult.updated ?? localResult.skippedDuplicates}</strong>
+                <span>Diperbarui / duplikat</span>
               </div>
             </div>
+            {localResult.modusDetect ? (
+              <div className="grid-3" style={{ marginTop: "0.75rem" }}>
+                <div className="stat">
+                  <strong>{localResult.modusDetect.scanned}</strong>
+                  <span>Dipindai modus</span>
+                </div>
+                <div className="stat">
+                  <strong>{localResult.modusDetect.withSuggestions}</strong>
+                  <span>Dengan usulan</span>
+                </div>
+                <div className="stat">
+                  <strong>{localResult.modusDetect.withoutSignal}</strong>
+                  <span>Tanpa sinyal</span>
+                </div>
+              </div>
+            ) : null}
             {localResult.samples?.length ? (
               <table className="data" style={{ marginTop: "0.75rem" }}>
                 <thead>
@@ -324,6 +355,7 @@ export function SippImportPanel() {
                     <th>Jenis</th>
                     <th>Status</th>
                     <th>tgl BHT</th>
+                    <th>Usulan modus</th>
                     <th>Aksi</th>
                   </tr>
                 </thead>
@@ -334,6 +366,11 @@ export function SippImportPanel() {
                       <td>{s.jenis_perkara}</td>
                       <td>{s.status_perkara}</td>
                       <td className="mono">{s.tanggal_bht || "—"}</td>
+                      <td className="muted">
+                        {s.modus_suggested?.length
+                          ? s.modus_suggested.join(", ")
+                          : "—"}
+                      </td>
                       <td>
                         <span className="badge">{s.action}</span>
                       </td>

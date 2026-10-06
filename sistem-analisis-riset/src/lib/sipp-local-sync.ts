@@ -1,6 +1,11 @@
 import { getDb } from "./db";
 import { makeBerkasCode, maskPartyText } from "./anonymize";
 import {
+  applyModusSuggestionsToCase,
+  detectModusFromFields,
+  type ModusDetectFields,
+} from "./modus-detect";
+import {
   getSippLocalConfig,
   searchSippLocalBht,
   type SippLocalCase,
@@ -15,12 +20,20 @@ export type LocalSyncResult = {
   imported: number;
   updated: number;
   skippedDuplicates: number;
+  modusDetect: {
+    scanned: number;
+    withSuggestions: number;
+    withoutSignal: number;
+    softApplied: number;
+    skippedConfirmed: number;
+  };
   samples: Array<{
     nomor_perkara: string;
     jenis_perkara: string | null;
     status_perkara: string | null;
     tanggal_bht: string | null;
     action: "imported" | "updated" | "skipped";
+    modus_suggested?: string[];
   }>;
   note: string;
 };
@@ -38,7 +51,6 @@ function splitKeywords(raw: string | string[]): string[] {
 }
 
 function maskedParties(row: SippLocalCase): string {
-  // Selalu mask secara bawaan untuk etika riset (proposal).
   const p1 = maskPartyText(row.pihak1_text ? `Pihak1: ${row.pihak1_text}` : "Disamarkan");
   const p2 = maskPartyText(row.pihak2_text ? `Pihak2: ${row.pihak2_text}` : "");
   return [p1, p2].filter(Boolean).join("; ") || "Disamarkan";
@@ -60,7 +72,28 @@ function kehadiranFromVerstek(v: string | null): string | null {
   return null;
 }
 
-function upsertLocalCase(row: SippLocalCase): "imported" | "updated" {
+function detectFieldsFromLocal(row: SippLocalCase): ModusDetectFields {
+  return {
+    amar_excerpt: row.amar_excerpt,
+    proses_text: row.proses_terakhir_text,
+    tahapan_text: row.tahapan_terakhir_text,
+    jenis_perkara: row.jenis_perkara_nama,
+    jenis_perkara_text: row.jenis_perkara_text,
+    putusan_verstek: row.putusan_verstek,
+    status_putusan: row.status_putusan_nama,
+    status_perkara: statusFromLocal(row),
+    nomor_akta_cerai: row.nomor_akta_cerai,
+    jenis_cerai: row.jenis_cerai,
+    pekerjaan_pihak1: row.pekerjaan_pihak1,
+    pekerjaan_pihak2: row.pekerjaan_pihak2,
+    kehadiran: kehadiranFromVerstek(row.putusan_verstek),
+  };
+}
+
+function upsertLocalCase(row: SippLocalCase): {
+  action: "imported" | "updated";
+  caseId: number;
+} {
   const db = getDb();
   const existing = db
     .prepare("SELECT id FROM cases WHERE nomor_perkara = ?")
@@ -99,6 +132,8 @@ function upsertLocalCase(row: SippLocalCase): "imported" | "updated" {
       tgl_penyerahan_akta_cerai: row.tgl_penyerahan_akta_cerai,
       jenis_cerai: row.jenis_cerai,
       pihak_dipublikasikan: row.pihak_dipublikasikan,
+      pekerjaan_pihak1: row.pekerjaan_pihak1,
+      pekerjaan_pihak2: row.pekerjaan_pihak2,
     }),
   };
 
@@ -127,7 +162,7 @@ function upsertLocalCase(row: SippLocalCase): "imported" | "updated" {
         updated_at = datetime('now')
       WHERE id = @id`,
     ).run({ ...payload, id: existing.id });
-    return "updated";
+    return { action: "updated", caseId: existing.id };
   }
 
   const count = (
@@ -136,8 +171,9 @@ function upsertLocalCase(row: SippLocalCase): "imported" | "updated" {
     }
   ).n;
   const kode = makeBerkasCode(year, count + 1);
-  db.prepare(
-    `INSERT INTO cases (
+  const info = db
+    .prepare(
+      `INSERT INTO cases (
       kode_berkas, nomor_perkara, jenis_perkara, tanggal_register, status_perkara,
       para_pihak_masked, sumber, tahun, kehadiran, coding_status,
       sipp_perkara_id, tanggal_putusan, tanggal_minutasi, tanggal_bht,
@@ -150,8 +186,9 @@ function upsertLocalCase(row: SippLocalCase): "imported" | "updated" {
       @tahapan_text, @proses_text, @putusan_verstek, @status_putusan,
       @amar_excerpt, @nomor_akta_cerai, @tgl_akta_cerai, @sipp_local_json
     )`,
-  ).run({ ...payload, kode_berkas: kode });
-  return "imported";
+    )
+    .run({ ...payload, kode_berkas: kode });
+  return { action: "imported", caseId: Number(info.lastInsertRowid) };
 }
 
 export async function syncSippLocalToWorkspace(opts: {
@@ -180,6 +217,14 @@ export async function syncSippLocalToWorkspace(opts: {
   const samples: LocalSyncResult["samples"] = [];
   const refreshExisting = opts.refreshExisting !== false;
 
+  const modusDetect = {
+    scanned: 0,
+    withSuggestions: 0,
+    withoutSignal: 0,
+    softApplied: 0,
+    skippedConfirmed: 0,
+  };
+
   const tx = getDb().transaction((items: SippLocalCase[]) => {
     for (const row of items) {
       if (!row.nomor_perkara) continue;
@@ -199,12 +244,23 @@ export async function syncSippLocalToWorkspace(opts: {
         }
         continue;
       }
-      const action = upsertLocalCase(row);
+      const { action, caseId } = upsertLocalCase(row);
       if (action === "imported") imported++;
       else {
         updated++;
         skippedDuplicates++;
       }
+
+      // Auto-detect modus (assistive) setelah impor/update metadata
+      const fields = detectFieldsFromLocal(row);
+      const detect = detectModusFromFields(fields, { source: "sipp_local_sync" });
+      const apply = applyModusSuggestionsToCase(caseId, detect, fields);
+      modusDetect.scanned++;
+      if (detect.suggestions.length) modusDetect.withSuggestions++;
+      else modusDetect.withoutSignal++;
+      if (apply.appliedSoft) modusDetect.softApplied++;
+      if (apply.skippedConfirmed) modusDetect.skippedConfirmed++;
+
       if (samples.length < 15) {
         samples.push({
           nomor_perkara: row.nomor_perkara,
@@ -212,6 +268,7 @@ export async function syncSippLocalToWorkspace(opts: {
           status_perkara: statusFromLocal(row),
           tanggal_bht: row.tanggal_bht,
           action,
+          modus_suggested: detect.suggestions.map((s) => s.id),
         });
       }
     }
@@ -227,10 +284,12 @@ export async function syncSippLocalToWorkspace(opts: {
     imported,
     updated,
     skippedDuplicates,
+    modusDetect,
     samples,
     note:
       "Sumber: MariaDB/MySQL lokal (skema sipp32). Filter BHT: tanggal_bht TIDAK NULL " +
       "ATAU ada perkara_akta_cerai ATAU proses_terakhir_text mengandung Akta Cerai/BHT/Berkekuatan. " +
-      "Nama pihak selalu disamarkan. WA-gateway asli tidak ditemukan di repo — mapping dari sipp32.sql.",
+      "Nama pihak selalu disamarkan. Usulan modus = heuristik dari amar/status/pekerjaan/verstek " +
+      "(bukan klasifikasi final — putusan PDF sering diperlukan).",
   };
 }

@@ -40,9 +40,9 @@ npm start
 Baca langsung MariaDB/MySQL satker (skema `sipp32`) lewat env **WA-gateway**:
 `SIPP_ENABLED`, `SIPP_HOST`, `SIPP_PORT`, `SIPP_DB`, `SIPP_USER`, `SIPP_PASSWORD`, `SIPP_CHARSET=latin1`.
 
-Tombol UI: **Sinkron SIPP Lokal** di `/perkara/impor`.
+Tombol UI: **Sinkron SIPP Lokal** di `/perkara/impor` (default: Cerai Gugat/Talak, tanggal putusan 2024–2026, BHT = `tanggal_bht` strict, wajib sinyal nafkah).
 
-Setelah sync, **usulan modus** otomatis (heuristik dari amar/verstek/pekerjaan) — bukan koding final. Tombol **Deteksi modus** di `/perkara` dan form koding.
+Usulan koding hanya dari sinyal andal; matriks gap: Agent Store `docs/kebutuhan-data-riset.md`.
 ### B. SIPP publik (cadangan)
 
 - **Base URL publik:** https://sipp.pa-sambas.go.id/

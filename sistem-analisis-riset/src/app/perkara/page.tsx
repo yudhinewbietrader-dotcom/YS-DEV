@@ -18,9 +18,8 @@ export default function PerkaraPage() {
       <section className="panel hero">
         <h1>Workspace koding berkas</h1>
         <p style={{ color: "var(--ink)" }}>
-          Unit analisis dokumen (Lampiran 1C): modus asimetri, respons hakim, objek
-          nafkah, dan evaluasi maqasid/al-&apos;adl. Sinkron SIPP mengimpor metadata;
-          modus diisi/usulkan lewat heuristik + konfirmasi peneliti.
+          Unit analisis dokumen (Lampiran 1C): field naratif + checklist operasional.
+          Sinkron SIPP = metadata akurat; modus dalam / nominal iddah biasanya dari putusan PDF.
         </p>
         <div className="actions">
           <Link className="btn" href="/perkara/impor">

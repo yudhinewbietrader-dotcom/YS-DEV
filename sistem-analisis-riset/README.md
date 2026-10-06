@@ -38,8 +38,14 @@ npm start
 - **Base URL publik:** https://sipp.pa-sambas.go.id/
 - Pencarian: `POST /list_perkara/search` (form `search_keyword` + token `enc`)
 - Detail: `GET /show_detil/{token}`
+- Pagination hasil cari: `GET /list_perkara/page/{n}/{token…}`
+- **Sinkron BHT:** tombol di `/perkara/impor` — mencari kata kunci + proxy “Pembuatan/Penyerahan Akta Cerai”, memfilter status final/BHT, lalu bulk upsert ke SQLite (dengan rate limit & batas halaman)
 
 Hanya halaman publik. Tidak ada bypass login, cookie admin, atau akses area terotentikasi.
+
+### Catatan BHT di SIPP publik PA Sambas
+
+Teks status “BHT” / “Berkekuatan Hukum Tetap” jarang muncul di daftar publik. Perkara cerai yang sudah final biasanya tampil sebagai **Pembuatan Akta Cerai** atau **Penyerahan Akta Cerai**. Filter sinkron mencakup keduanya plus variasi BHT/inkracht bila ada.
 
 ## Etika & batasan
 

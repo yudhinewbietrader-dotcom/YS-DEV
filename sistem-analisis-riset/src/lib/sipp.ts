@@ -107,6 +107,242 @@ function parseListTable(html: string): SippListItem[] {
   return items;
 }
 
+/** Status publik yang menandai perkara sudah final / pasca-BHT di SIPP PA Sambas. */
+export function isBhtStatus(status: string | null | undefined): boolean {
+  const s = (status || "").replace(/\s+/g, " ").trim();
+  if (!s) return false;
+  if (/\bBHT\b/i.test(s)) return true;
+  if (/berkekuatan\s+hukum\s+tetap/i.test(s)) return true;
+  if (/inkracht/i.test(s)) return true;
+  // Di portal publik PA Sambas, teks "BHT" jarang muncul; tahap pasca-BHT cerai
+  // biasanya tampil sebagai pembuatan/penyerahan akta cerai.
+  if (/pembuatan\s+akta\s+cerai/i.test(s)) return true;
+  if (/penyerahan\s+akta\s+cerai/i.test(s)) return true;
+  return false;
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 0,
+  january: 0,
+  januari: 0,
+  feb: 1,
+  february: 1,
+  februari: 1,
+  mar: 2,
+  march: 2,
+  maret: 2,
+  apr: 3,
+  april: 3,
+  may: 4,
+  mei: 4,
+  jun: 5,
+  june: 5,
+  juni: 5,
+  jul: 6,
+  july: 6,
+  juli: 6,
+  aug: 7,
+  august: 7,
+  agustus: 7,
+  agu: 7,
+  sep: 8,
+  september: 8,
+  sept: 8,
+  oct: 9,
+  october: 9,
+  oktober: 9,
+  okt: 9,
+  nov: 10,
+  november: 10,
+  dec: 11,
+  december: 11,
+  desember: 11,
+  des: 11,
+};
+
+/** Parse tanggal register SIPP ("06 Oct 2026", "12 Mar 2025", "01/01/2024"). */
+export function parseSippDate(raw: string | null | undefined): Date | null {
+  if (!raw) return null;
+  const t = raw.trim();
+  const m1 = t.match(/^(\d{1,2})\s+([A-Za-z.]+)\s+(\d{4})$/);
+  if (m1) {
+    const day = Number(m1[1]);
+    const mon = MONTHS[m1[2].replace(/\./g, "").toLowerCase()];
+    const year = Number(m1[3]);
+    if (mon == null || !day || !year) return null;
+    return new Date(Date.UTC(year, mon, day));
+  }
+  const m2 = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (m2) {
+    return new Date(Date.UTC(Number(m2[3]), Number(m2[2]) - 1, Number(m2[1])));
+  }
+  const parsed = Date.parse(t);
+  return Number.isFinite(parsed) ? new Date(parsed) : null;
+}
+
+export function dateInRange(
+  tanggalRegister: string,
+  from?: string | null,
+  to?: string | null,
+): boolean {
+  if (!from && !to) return true;
+  const d = parseSippDate(tanggalRegister);
+  if (!d) return !from && !to ? true : false;
+  if (from) {
+    const f = parseSippDate(from) || new Date(from);
+    if (Number.isFinite(+f) && d < f) return false;
+  }
+  if (to) {
+    const t = parseSippDate(to) || new Date(to);
+    if (Number.isFinite(+t) && d > t) return false;
+  }
+  return true;
+}
+
+function parseSearchMeta(html: string): {
+  totalReported: number | null;
+  pagePrefix: string | null;
+  pageTokenSuffix: string | null;
+} {
+  const totalMatch = html.match(/Total\s*:\s*([\d.]+)\s*Perkara/i);
+  const totalReported = totalMatch
+    ? Number(totalMatch[1].replace(/\./g, ""))
+    : null;
+  const pag = html.match(
+    /window\.open\('([^']*list_perkara\/(?:search_detail\/)?page\/)'\s*\+\s*pageNumber\s*\+\s*'([^']+)'/,
+  );
+  return {
+    totalReported: Number.isFinite(totalReported as number) ? totalReported : null,
+    pagePrefix: pag?.[1] || `${SIPP_BASE_URL}/list_perkara/page/`,
+    pageTokenSuffix: pag?.[2] || null,
+  };
+}
+
+async function postKeywordSearch(
+  keyword: string,
+  cookiesIn: string[],
+): Promise<{ html: string; cookies: string[]; enc: string }> {
+  const { enc, cookies } = await getEncToken(cookiesIn);
+  const body = new URLSearchParams({ search_keyword: keyword, enc });
+  const res = await politeFetch(`${SIPP_BASE_URL}/list_perkara/search`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Cookie: cookieHeader(cookies),
+      Referer: `${SIPP_BASE_URL}/`,
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) throw new Error(`SIPP search gagal: HTTP ${res.status}`);
+  const setCookie = res.headers.getSetCookie?.() || [];
+  const nextCookies = [...cookies, ...setCookie.map((c) => c.split(";")[0])];
+  return { html: await res.text(), cookies: nextCookies, enc };
+}
+
+async function fetchSearchPage(
+  page: number,
+  pagePrefix: string,
+  pageTokenSuffix: string,
+  cookies: string[],
+): Promise<{ html: string; cookies: string[] }> {
+  const url = `${pagePrefix}${page}${pageTokenSuffix}`;
+  const res = await politeFetch(url, {
+    headers: {
+      Cookie: cookieHeader(cookies),
+      Referer: `${SIPP_BASE_URL}/`,
+    },
+  });
+  if (!res.ok) throw new Error(`SIPP halaman ${page} gagal: HTTP ${res.status}`);
+  const setCookie = res.headers.getSetCookie?.() || [];
+  return {
+    html: await res.text(),
+    cookies: [...cookies, ...setCookie.map((c) => c.split(";")[0])],
+  };
+}
+
+/**
+ * Pencarian publik + pagination (rate-limited).
+ * maxPages membatasi jumlah halaman yang diambil (etika + waktu).
+ */
+export async function searchSippPublicPaginated(
+  keyword: string,
+  opts?: { maxPages?: number; useCache?: boolean },
+): Promise<{
+  items: SippListItem[];
+  pagesFetched: number;
+  totalReported: number | null;
+  truncated: boolean;
+}> {
+  const q = keyword.trim();
+  const maxPages = Math.max(1, Math.min(opts?.maxPages ?? 10, 50));
+  if (!q) {
+    return { items: [], pagesFetched: 0, totalReported: null, truncated: false };
+  }
+
+  const cacheKey = `search_pages:${q.toLowerCase()}:p${maxPages}`;
+  if (opts?.useCache !== false) {
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      return JSON.parse(cached) as {
+        items: SippListItem[];
+        pagesFetched: number;
+        totalReported: number | null;
+        truncated: boolean;
+      };
+    }
+  }
+
+  const first = await postKeywordSearch(q, []);
+  const meta = parseSearchMeta(first.html);
+  const page1 = parseListTable(first.html);
+  const byNomor = new Map<string, SippListItem>();
+  for (const it of page1) byNomor.set(it.nomor_perkara, it);
+
+  let pagesFetched = 1;
+  let cookies = first.cookies;
+  let truncated = false;
+
+  const totalPages =
+    meta.totalReported != null
+      ? Math.ceil(meta.totalReported / 20)
+      : maxPages;
+
+  if (meta.pageTokenSuffix && totalPages > 1) {
+    const limit = Math.min(maxPages, totalPages);
+    for (let page = 2; page <= limit; page++) {
+      const next = await fetchSearchPage(
+        page,
+        meta.pagePrefix || `${SIPP_BASE_URL}/list_perkara/page/`,
+        meta.pageTokenSuffix,
+        cookies,
+      );
+      cookies = next.cookies;
+      const items = parseListTable(next.html);
+      for (const it of items) byNomor.set(it.nomor_perkara, it);
+      pagesFetched++;
+      if (items.length === 0) break;
+    }
+    truncated = limit < totalPages;
+  }
+
+  const result = {
+    items: [...byNomor.values()],
+    pagesFetched,
+    totalReported: meta.totalReported,
+    truncated,
+  };
+  cacheSet(cacheKey, JSON.stringify(result));
+  return result;
+}
+
+/** Istilah pencarian tambahan untuk menangkap perkara pasca-BHT di SIPP publik. */
+export const BHT_PROXY_SEARCH_TERMS = [
+  "Pembuatan Akta Cerai",
+  "Penyerahan Akta Cerai",
+  "Berkekuatan Hukum Tetap",
+  "BHT",
+] as const;
+
 async function getEncToken(cookieJar: string[]): Promise<{ enc: string; cookies: string[] }> {
   const res = await politeFetch(`${SIPP_BASE_URL}/`);
   const setCookie = res.headers.getSetCookie?.() || [];

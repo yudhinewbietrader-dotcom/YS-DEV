@@ -5,6 +5,7 @@ import {
   detectModusFromFields,
   type ModusDetectFields,
 } from "./modus-detect";
+import { assessDataQuality } from "./data-quality";
 import {
   getSippLocalConfig,
   searchSippLocalBht,
@@ -12,6 +13,8 @@ import {
   type DateField,
   type SippLocalCase,
 } from "./sipp-local";
+import { nominalsToRingkas } from "./sipp-nominals";
+import { getPdfBasePath, getPdfBaseUrl } from "./sipp-pdf";
 
 export type LocalSyncResult = {
   source: "sipp_local_mysql";
@@ -26,6 +29,8 @@ export type LocalSyncResult = {
   updated: number;
   skippedDuplicates: number;
   withTanggalBht: number;
+  withPdf: number;
+  withNominals: number;
   modusDetect: {
     scanned: number;
     withSuggestions: number;
@@ -40,11 +45,14 @@ export type LocalSyncResult = {
     tanggal_bht: string | null;
     bht_basis: string;
     nafkah_signal: boolean;
+    nominal_ringkas?: string;
+    pdf_count?: number;
     action: "imported" | "updated" | "skipped";
     modus_suggested?: string[];
     objek_suggested?: string[];
   }>;
   note: string;
+  pdf_env: { base_path: string; base_url: string };
 };
 
 function splitKeywords(raw: string | string[]): string[] {
@@ -111,14 +119,25 @@ function detectFieldsFromLocal(row: SippLocalCase): ModusDetectFields {
   };
 }
 
+function primaryPdfUrl(row: SippLocalCase): string | null {
+  for (const r of row.pdf_refs) {
+    if (r.url) return r.url;
+  }
+  return null;
+}
+
 function upsertLocalCase(row: SippLocalCase): {
   action: "imported" | "updated";
   caseId: number;
 } {
   const db = getDb();
   const existing = db
-    .prepare("SELECT id FROM cases WHERE nomor_perkara = ?")
-    .get(row.nomor_perkara) as { id: number } | undefined;
+    .prepare(
+      "SELECT id, coding_status, nominal_ringkas FROM cases WHERE nomor_perkara = ?",
+    )
+    .get(row.nomor_perkara) as
+    | { id: number; coding_status: string; nominal_ringkas: string | null }
+    | undefined;
 
   const year =
     Number(row.nomor_perkara.match(/\/(\d{4})\//)?.[1]) ||
@@ -127,6 +146,32 @@ function upsertLocalCase(row: SippLocalCase): {
       : row.tanggal_pendaftaran
         ? Number(String(row.tanggal_pendaftaran).slice(0, 4))
         : new Date().getFullYear());
+
+  const ringkas = nominalsToRingkas(row.nominals);
+  const quality = assessDataQuality({
+    nomor_perkara: row.nomor_perkara,
+    jenis_perkara: row.jenis_perkara_nama || row.jenis_perkara_text,
+    tanggal_putusan: row.tanggal_putusan,
+    tanggal_bht: row.tanggal_bht,
+    bht_basis: row.bht_basis,
+    putusan_verstek: row.putusan_verstek,
+    amar_excerpt: row.amar_excerpt,
+    amar_char_count: row.amar_char_count,
+    amar_truncated: row.amar_truncated,
+    petitum_excerpt: row.petitum_excerpt,
+    posita_excerpt: row.posita_excerpt,
+    pertimbangan_excerpt: row.pertimbangan_excerpt,
+    pekerjaan_pihak1: row.pekerjaan_pihak1,
+    pekerjaan_pihak2: row.pekerjaan_pihak2,
+    anak_jumlah_nafkah_sum: row.anak_jumlah_nafkah_sum,
+    anak_count: row.anak_count,
+    nafkah_signal: row.nafkah_signal,
+    proses_text: row.proses_terakhir_text,
+    tahapan_text: row.tahapan_terakhir_text,
+    nomor_akta_cerai: row.nomor_akta_cerai,
+    nominals: row.nominals,
+    pdf_refs: row.pdf_refs,
+  });
 
   const localJson = {
     perkara_id: row.perkara_id,
@@ -147,7 +192,17 @@ function upsertLocalCase(row: SippLocalCase): {
     anak_jumlah_nafkah_sum: row.anak_jumlah_nafkah_sum,
     bht_basis: row.bht_basis,
     nafkah_signal: row.nafkah_signal,
+    amar_putusan_dok: row.amar_putusan_dok,
+    amar_putusan_anonimisasi_dok: row.amar_putusan_anonimisasi_dok,
+    pdf_refs: row.pdf_refs,
+    nominals: row.nominals,
+    schema_probe: row.schema_probe,
   };
+
+  const shouldFillNominalRingkas =
+    !existing ||
+    existing.coding_status !== "coded" ||
+    !existing.nominal_ringkas;
 
   const payload = {
     nomor_perkara: row.nomor_perkara,
@@ -172,6 +227,19 @@ function upsertLocalCase(row: SippLocalCase): {
     pertimbangan_excerpt: row.pertimbangan_excerpt,
     bht_basis: row.bht_basis,
     sipp_local_json: JSON.stringify(localJson),
+    nominal_iddah: row.nominals.iddah?.amount ?? null,
+    nominal_mutah: row.nominals.mutah?.amount ?? null,
+    nominal_hadhanah: row.nominals.hadhanah?.amount ?? null,
+    nominal_madhiyah: row.nominals.madhiyah?.amount ?? null,
+    nominal_json: JSON.stringify(row.nominals),
+    amar_putusan_dok: row.amar_putusan_dok,
+    amar_putusan_anonimisasi_dok: row.amar_putusan_anonimisasi_dok,
+    putusan_pdf_json: JSON.stringify(row.pdf_refs),
+    putusan_pdf_url: primaryPdfUrl(row),
+    data_quality_json: JSON.stringify(quality),
+    nominal_ringkas: shouldFillNominalRingkas
+      ? ringkas || null
+      : existing?.nominal_ringkas || ringkas || null,
   };
 
   if (existing) {
@@ -198,6 +266,17 @@ function upsertLocalCase(row: SippLocalCase): {
         pertimbangan_excerpt = @pertimbangan_excerpt,
         bht_basis = @bht_basis,
         sipp_local_json = @sipp_local_json,
+        nominal_iddah = @nominal_iddah,
+        nominal_mutah = @nominal_mutah,
+        nominal_hadhanah = @nominal_hadhanah,
+        nominal_madhiyah = @nominal_madhiyah,
+        nominal_json = @nominal_json,
+        amar_putusan_dok = @amar_putusan_dok,
+        amar_putusan_anonimisasi_dok = @amar_putusan_anonimisasi_dok,
+        putusan_pdf_json = @putusan_pdf_json,
+        putusan_pdf_url = @putusan_pdf_url,
+        data_quality_json = @data_quality_json,
+        nominal_ringkas = COALESCE(@nominal_ringkas, nominal_ringkas),
         sumber = 'sipp_local',
         updated_at = datetime('now')
       WHERE id = @id`,
@@ -219,14 +298,20 @@ function upsertLocalCase(row: SippLocalCase): {
       sipp_perkara_id, tanggal_putusan, tanggal_minutasi, tanggal_bht,
       tahapan_text, proses_text, putusan_verstek, status_putusan,
       amar_excerpt, nomor_akta_cerai, tgl_akta_cerai, sipp_local_json,
-      petitum_excerpt, pertimbangan_excerpt, bht_basis
+      petitum_excerpt, pertimbangan_excerpt, bht_basis,
+      nominal_iddah, nominal_mutah, nominal_hadhanah, nominal_madhiyah, nominal_json,
+      amar_putusan_dok, amar_putusan_anonimisasi_dok, putusan_pdf_json, putusan_pdf_url,
+      data_quality_json, nominal_ringkas
     ) VALUES (
       @kode_berkas, @nomor_perkara, @jenis_perkara, @tanggal_register, @status_perkara,
       @para_pihak_masked, 'sipp_local', @tahun, @kehadiran, 'draft',
       @sipp_perkara_id, @tanggal_putusan, @tanggal_minutasi, @tanggal_bht,
       @tahapan_text, @proses_text, @putusan_verstek, @status_putusan,
       @amar_excerpt, @nomor_akta_cerai, @tgl_akta_cerai, @sipp_local_json,
-      @petitum_excerpt, @pertimbangan_excerpt, @bht_basis
+      @petitum_excerpt, @pertimbangan_excerpt, @bht_basis,
+      @nominal_iddah, @nominal_mutah, @nominal_hadhanah, @nominal_madhiyah, @nominal_json,
+      @amar_putusan_dok, @amar_putusan_anonimisasi_dok, @putusan_pdf_json, @putusan_pdf_url,
+      @data_quality_json, @nominal_ringkas
     )`,
     )
     .run({ ...payload, kode_berkas: kode });
@@ -267,6 +352,8 @@ export async function syncSippLocalToWorkspace(opts: {
   let updated = 0;
   let skippedDuplicates = 0;
   let withTanggalBht = 0;
+  let withPdf = 0;
+  let withNominals = 0;
   const samples: LocalSyncResult["samples"] = [];
   const refreshExisting = opts.refreshExisting !== false;
 
@@ -282,6 +369,8 @@ export async function syncSippLocalToWorkspace(opts: {
     for (const row of items) {
       if (!row.nomor_perkara) continue;
       if (row.tanggal_bht) withTanggalBht++;
+      if (row.pdf_refs.length) withPdf++;
+      if (row.nominals.items.length) withNominals++;
       const existing = getDb()
         .prepare("SELECT id FROM cases WHERE nomor_perkara = ?")
         .get(row.nomor_perkara);
@@ -295,6 +384,8 @@ export async function syncSippLocalToWorkspace(opts: {
             tanggal_bht: row.tanggal_bht,
             bht_basis: row.bht_basis,
             nafkah_signal: row.nafkah_signal,
+            nominal_ringkas: nominalsToRingkas(row.nominals) || undefined,
+            pdf_count: row.pdf_refs.length,
             action: "skipped",
           });
         }
@@ -309,7 +400,7 @@ export async function syncSippLocalToWorkspace(opts: {
 
       const fields = detectFieldsFromLocal(row);
       const detect = detectModusFromFields(fields, {
-        source: "sipp_local_sync_v2",
+        source: "sipp_local_sync_v3",
       });
       const apply = applyModusSuggestionsToCase(caseId, detect, fields);
       modusDetect.scanned++;
@@ -327,6 +418,8 @@ export async function syncSippLocalToWorkspace(opts: {
           tanggal_bht: row.tanggal_bht,
           bht_basis: row.bht_basis,
           nafkah_signal: row.nafkah_signal,
+          nominal_ringkas: nominalsToRingkas(row.nominals) || undefined,
+          pdf_count: row.pdf_refs.length,
           action,
           modus_suggested: detect.suggestions.map((s) => s.id),
           objek_suggested: detect.objek_suggestions.map((s) => s.id),
@@ -349,8 +442,14 @@ export async function syncSippLocalToWorkspace(opts: {
     updated,
     skippedDuplicates,
     withTanggalBht,
+    withPdf,
+    withNominals,
     modusDetect,
     samples,
+    pdf_env: {
+      base_path: getPdfBasePath(),
+      base_url: getPdfBaseUrl(),
+    },
     note:
       "Filter riset: jenis (keyword) + putusan ada + " +
       (bhtMode === "strict"
@@ -362,7 +461,7 @@ export async function syncSippLocalToWorkspace(opts: {
         ? "; wajib sinyal nafkah di amar/petitum/posita atau anak.jumlah_nafkah"
         : "") +
       `. Tanggal filter: ${dateField}. ` +
-      "Usulan modus hanya dari sinyal andal (verstek flag, pekerjaan pihak, frasa kuat). " +
-      "Nominal iddah/mut'ah & evaluasi maqasid TIDAK ada di kolom SIPP — isi dari putusan/PDF.",
+      "Nominal: anak dari perkara_anak_pihak.jumlah_nafkah; iddah/mut'ah dari kolom typed (jika probe menemukan) atau parse amar — DB mengalahkan regex. " +
+      "PDF: path relatif di amar_putusan_dok (+ anon / perkara_dokumen / dirput); set SIPP_PDF_BASE_URL agar link bisa dibuka di LAN satker.",
   };
 }

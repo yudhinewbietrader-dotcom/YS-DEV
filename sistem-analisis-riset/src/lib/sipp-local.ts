@@ -3,18 +3,33 @@
  *
  * Env primer mengikuti pola WA-gateway:
  *   SIPP_ENABLED, SIPP_HOST, SIPP_PORT, SIPP_DB, SIPP_USER, SIPP_PASSWORD, SIPP_CHARSET
+ * PDF (path relatif di server satker):
+ *   SIPP_PDF_BASE_PATH, SIPP_PDF_BASE_URL
  *
  * Mapping tabel/kolom: sipp32.sql — docs/kebutuhan-data-riset.md
  *
- * Filter riset (proposal Bab III):
- * - Jenis: Cerai Gugat / Cerai Talak (keyword, bisa diedit)
- * - Nafkah: sinyal di amar/petitum/posita ATAU perkara_anak_pihak.jumlah_nafkah
- * - BHT: tanggal_bht = ground truth; proxy akta/proses opsional & ditandai
+ * Nominal:
+ * - Anak terstruktur: perkara_anak_pihak.jumlah_nafkah
+ * - Iddah/mut’ah: probe kolom typed di DB live (jika patch), else parse amar;
+ *   angka juga tersedia lewat PDF di amar_putusan_dok
  *
  * Keamanan: SELECT-only; kredensial dari env user.
  */
 
 import mysql, { type Pool, type RowDataPacket } from "mysql2/promise";
+import { firstEnv, truthyEnv } from "./sipp-env";
+import {
+  mergeNominals,
+  type NominalBundle,
+} from "./sipp-nominals";
+import {
+  buildExtraNominalSelect,
+  collectPdfRefs,
+  dbNominalsFromRow,
+  probeSippSchema,
+  type PdfRef,
+  type SchemaProbeResult,
+} from "./sipp-pdf";
 
 export type SippLocalConfig = {
   enabled: boolean;
@@ -66,10 +81,21 @@ export type SippLocalCase = {
   pekerjaan_pihak2: string | null;
   /** Jumlah baris anak di perkara_anak_pihak */
   anak_count: number;
-  /** Sum jumlah_nafkah anak (satu-satunya nominal nafkah terstruktur di skema) */
+  /** Sum jumlah_nafkah anak (kolom terstruktur dump) */
   anak_jumlah_nafkah_sum: number | null;
   bht_basis: BhtBasis;
   nafkah_signal: boolean;
+  /** Path relatif upload PDF amar (bukan BLOB) */
+  amar_putusan_dok: string | null;
+  amar_putusan_anonimisasi_dok: string | null;
+  /** Referensi PDF yang bisa dibuka di LAN satker */
+  pdf_refs: PdfRef[];
+  /** Bundle nominal iddah / mut’ah / anak / madhiyah */
+  nominals: NominalBundle;
+  schema_probe?: Pick<
+    SchemaProbeResult,
+    "presentNominalColumns" | "notes" | "probed_at"
+  >;
 };
 
 export type BhtMode = "strict" | "prefer" | "none";
@@ -81,19 +107,6 @@ const globalForSipp = globalThis as unknown as {
   __sippLocalPool?: Pool;
   __sippLocalPoolKey?: string;
 };
-
-function truthyEnv(raw: string | undefined): boolean {
-  const v = (raw || "").toLowerCase().trim();
-  return v === "1" || v === "true" || v === "yes" || v === "y" || v === "on";
-}
-
-function firstEnv(...keys: string[]): string {
-  for (const k of keys) {
-    const v = process.env[k];
-    if (v != null && String(v).trim() !== "") return String(v).trim();
-  }
-  return "";
-}
 
 export function getSippLocalConfig(): SippLocalConfig {
   const enabledFlag = firstEnv("SIPP_ENABLED", "SIPP_DB_ENABLED");
@@ -169,6 +182,7 @@ export async function testSippLocalConnection(): Promise<{
   host: string;
   sampleCount?: number;
   error?: string;
+  schemaProbe?: SchemaProbeResult;
 }> {
   const cfg = getSippLocalConfig();
   if (!cfg.enabled) {
@@ -179,11 +193,18 @@ export async function testSippLocalConnection(): Promise<{
     const sql = "SELECT COUNT(*) AS n FROM perkara LIMIT 1";
     assertSelectOnly(sql);
     const [rows] = await pool.query<RowDataPacket[]>(sql);
+    let schemaProbe: SchemaProbeResult | undefined;
+    try {
+      schemaProbe = await probeSippSchema(pool);
+    } catch {
+      schemaProbe = undefined;
+    }
     return {
       ok: true,
       database: cfg.database,
       host: cfg.host,
       sampleCount: Number(rows[0]?.n ?? 0),
+      schemaProbe,
     };
   } catch (e) {
     return {
@@ -231,7 +252,6 @@ function toDateParam(raw?: string | null): string | null {
     september: "09",
     sept: "09",
     oct: "10",
-    october: "10",
     oktober: "10",
     okt: "10",
     nov: "11",
@@ -271,15 +291,12 @@ function resolveBhtBasis(row: {
 /**
  * Cari perkara cerai relevan untuk riset asimetri nafkah.
  *
- * Kolom yang diimpor (eksplisit, dari sipp32.sql):
+ * Kolom yang diimpor (eksplisit, dari sipp32.sql + probe live):
  * - perkara.* (identitas, jenis, proses, tahapan, pihak text, posita/petitum)
- * - perkara_putusan: tanggal_*, putusan_verstek, status_*, amar_putusan (LONGTEXT)
- * - perkara_pertimbangan_hukum.pertimbangan_hukum (jika ada)
- * - perkara_akta_cerai.*
- * - pihak.pekerjaan via perkara_pihak1/2
- * - perkara_anak_pihak.jumlah_nafkah (satu-satunya nominal nafkah terstruktur)
- *
- * Tidak ada kolom SIPP untuk iddah/mut'ah/madhiyah/ex officio/penghasilan pihak.
+ * - perkara_putusan: tanggal_*, putusan_verstek, status_*, amar_putusan,
+ *   amar_putusan_dok, amar_putusan_anonimisasi_dok (+ kolom nominal typed bila ada)
+ * - perkara_anak_pihak.jumlah_nafkah
+ * - perkara_dokumen.lokasi_file / dirput_dokumen.path_filename|link_dirput
  */
 export async function searchSippLocalBht(opts: {
   keywords: string[];
@@ -313,7 +330,6 @@ export async function searchSippLocalBht(opts: {
   keywords.forEach((kw, i) => {
     const key = `kw${i}`;
     params[key] = `%${kw}%`;
-    // Fokus jenis perkara (bukan proses) agar tidak noisy
     keywordConds.push(
       `(p.jenis_perkara_nama LIKE :${key} OR p.jenis_perkara_text LIKE :${key} OR p.nomor_perkara LIKE :${key})`,
     );
@@ -321,7 +337,6 @@ export async function searchSippLocalBht(opts: {
 
   let bhtClause = "";
   if (bhtMode === "strict") {
-    // Ground truth proposal-operasional: hanya tanggal_bht
     bhtClause = "AND pp.tanggal_bht IS NOT NULL";
   } else if (bhtMode === "prefer") {
     bhtClause = `AND (
@@ -333,7 +348,6 @@ export async function searchSippLocalBht(opts: {
         OR p.proses_terakhir_text LIKE '%inkracht%'
       )`;
   }
-  // bhtMode === "none": tidak filter BHT (proposal literal tidak mensyaratkan BHT)
 
   const nafkahClause = requireNafkah
     ? `AND (
@@ -370,8 +384,52 @@ export async function searchSippLocalBht(opts: {
     dateClause += ` AND ${dateCol} <= :dateTo`;
   }
 
-  // Harus ada putusan agar amar/verstek tersedia
   const mustHavePutusan = "AND pp.perkara_id IS NOT NULL";
+
+  const pool = getSippLocalPool();
+  const probe = await probeSippSchema(pool);
+  const extraNom = buildExtraNominalSelect(probe);
+
+  const pdfSelect = `
+      pp.amar_putusan_dok,
+      pp.amar_putusan_anonimisasi_dok,
+      (
+        SELECT pd.lokasi_file FROM perkara_dokumen pd
+        WHERE pd.perkara_id = p.perkara_id
+          AND (
+            LOWER(COALESCE(pd.nama_dokumen,'')) LIKE '%putusan%'
+            OR LOWER(COALESCE(pd.nama_file,'')) LIKE '%.pdf%'
+            OR LOWER(COALESCE(pd.lokasi_file,'')) LIKE '%.pdf%'
+          )
+        ORDER BY pd.id DESC
+        LIMIT 1
+      ) AS dokumen_putusan_path,
+      (
+        SELECT pd.nama_dokumen FROM perkara_dokumen pd
+        WHERE pd.perkara_id = p.perkara_id
+          AND (
+            LOWER(COALESCE(pd.nama_dokumen,'')) LIKE '%putusan%'
+            OR LOWER(COALESCE(pd.nama_file,'')) LIKE '%.pdf%'
+            OR LOWER(COALESCE(pd.lokasi_file,'')) LIKE '%.pdf%'
+          )
+        ORDER BY pd.id DESC
+        LIMIT 1
+      ) AS dokumen_putusan_nama,
+      (
+        SELECT dd.path_filename FROM dirput_dokumen dd
+        WHERE dd.perkara_id = p.perkara_id
+        ORDER BY dd.id DESC
+        LIMIT 1
+      ) AS dirput_path,
+      (
+        SELECT dd.link_dirput FROM dirput_dokumen dd
+        WHERE dd.perkara_id = p.perkara_id
+          AND dd.link_dirput IS NOT NULL
+          AND dd.link_dirput <> ''
+        ORDER BY dd.id DESC
+        LIMIT 1
+      ) AS dirput_link
+  `;
 
   const sql = `
     SELECT
@@ -426,7 +484,9 @@ export async function searchSippLocalBht(opts: {
         SELECT SUM(pap.jumlah_nafkah) FROM perkara_anak_pihak pap
         WHERE pap.perkara_id = p.perkara_id
           AND pap.jumlah_nafkah IS NOT NULL
-      ) AS anak_jumlah_nafkah_sum
+      ) AS anak_jumlah_nafkah_sum,
+      ${pdfSelect}
+      ${extraNom.selectSql}
     FROM perkara p
     INNER JOIN perkara_putusan pp ON pp.perkara_id = p.perkara_id
     LEFT JOIN perkara_akta_cerai ac ON ac.perkara_id = p.perkara_id
@@ -444,8 +504,13 @@ export async function searchSippLocalBht(opts: {
   `;
 
   assertSelectOnly(sql);
-  const pool = getSippLocalPool();
   const [rows] = await pool.query<RowDataPacket[]>(sql, params);
+
+  const probeSummary = {
+    presentNominalColumns: probe.presentNominalColumns,
+    notes: probe.notes,
+    probed_at: probe.probed_at,
+  };
 
   return rows.map((r) => {
     const tanggal_bht = r.tanggal_bht ? String(r.tanggal_bht) : null;
@@ -455,12 +520,22 @@ export async function searchSippLocalBht(opts: {
     const amar_excerpt = r.amar_excerpt ? String(r.amar_excerpt) : null;
     const anak_sum =
       r.anak_jumlah_nafkah_sum != null ? Number(r.anak_jumlah_nafkah_sum) : null;
+    const dbItems = dbNominalsFromRow(
+      r as Record<string, unknown>,
+      extraNom.kinds,
+    );
+    const nominals = mergeNominals({
+      dbItems,
+      anakSum: anak_sum,
+      amarText: amar_excerpt,
+    });
+    const pdf_refs = collectPdfRefs(r as Record<string, unknown>);
     const nafkah_signal =
-      anak_sum != null && anak_sum > 0
-        ? true
-        : /nafkah|iddah|mut.?ah|mutah|hadhanah|madhiyah/i.test(
-            `${amar_excerpt || ""} ${r.petitum_excerpt || ""} ${r.posita_excerpt || ""}`,
-          );
+      (anak_sum != null && anak_sum > 0) ||
+      nominals.items.length > 0 ||
+      /nafkah|iddah|mut.?ah|mutah|hadhanah|madhiyah/i.test(
+        `${amar_excerpt || ""} ${r.petitum_excerpt || ""} ${r.posita_excerpt || ""}`,
+      );
 
     return {
       perkara_id: Number(r.perkara_id),
@@ -513,6 +588,13 @@ export async function searchSippLocalBht(opts: {
       anak_jumlah_nafkah_sum: anak_sum,
       bht_basis: resolveBhtBasis({ tanggal_bht, has_akta, proses }),
       nafkah_signal,
+      amar_putusan_dok: r.amar_putusan_dok ? String(r.amar_putusan_dok) : null,
+      amar_putusan_anonimisasi_dok: r.amar_putusan_anonimisasi_dok
+        ? String(r.amar_putusan_anonimisasi_dok)
+        : null,
+      pdf_refs,
+      nominals,
+      schema_probe: probeSummary,
     };
   });
 }

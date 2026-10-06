@@ -23,6 +23,8 @@ type SyncResult = {
   bhtMode?: string;
   requireNafkah?: boolean;
   withTanggalBht?: number;
+  withPdf?: number;
+  withNominals?: number;
   modusDetect?: {
     scanned: number;
     withSuggestions: number;
@@ -37,6 +39,8 @@ type SyncResult = {
     tanggal_bht?: string | null;
     bht_basis?: string;
     nafkah_signal?: boolean;
+    nominal_ringkas?: string;
+    pdf_count?: number;
     action: string;
     modus_suggested?: string[];
     objek_suggested?: string[];
@@ -255,11 +259,11 @@ export function SippImportPanel() {
       <section className="panel hero">
         <h2>Sinkron SIPP Lokal (MySQL/MariaDB)</h2>
         <p style={{ color: "var(--ink)" }}>
-          Impor <strong>metadata akurat</strong> untuk kandidat berkas tesis (Cerai Gugat/Talak
-          2024–2026 + sinyal nafkah). BHT ground truth ={" "}
-          <span className="mono">perkara_putusan.tanggal_bht</span>. Setelah sync: usulan
-          terbatas (verstek flag, pekerjaan pihak, objek nafkah di teks) — bukan koding final.
-          Nominal iddah/mut&apos;ah &amp; modus tadlis tetap dari putusan/PDF.
+          Impor kandidat berkas tesis (Cerai Gugat/Talak + sinyal nafkah) termasuk{" "}
+          <strong>nominal iddah / mut&apos;ah / nafkah anak</strong> dan{" "}
+          <strong>path/URL PDF putusan</strong>. BHT ground truth ={" "}
+          <span className="mono">perkara_putusan.tanggal_bht</span>. Set{" "}
+          <span className="mono">SIPP_PDF_BASE_URL</span> agar link PDF LAN aktif.
         </p>
         {localStatus ? (
           <p className="muted">
@@ -350,8 +354,10 @@ export function SippImportPanel() {
           />
           <p className="muted">
             Diimpor: identitas, tanggal putusan/BHT/minutasi, verstek, amar (~12k char),
-            petitum/posita/pertimbangan (cuplikan), pekerjaan pihak, jumlah_nafkah anak.
-            Tidak ada kolom SIPP untuk nominal iddah/mut&apos;ah atau ex officio.
+            petitum/posita/pertimbangan, pekerjaan pihak,{" "}
+            <span className="mono">jumlah_nafkah</span> anak, nominal iddah/mut&apos;ah
+            (kolom typed bila ada / parse amar), path{" "}
+            <span className="mono">amar_putusan_dok</span> (+ dokumen/dirput).
           </p>
           <div className="actions">
             <button className="btn" type="submit" disabled={anyBusy}>
@@ -378,6 +384,22 @@ export function SippImportPanel() {
                 <span>Diperbarui / duplikat</span>
               </div>
             </div>
+            {localResult.withNominals != null || localResult.withPdf != null ? (
+              <div className="grid-3" style={{ marginTop: "0.75rem" }}>
+                <div className="stat">
+                  <strong>{localResult.withTanggalBht ?? "—"}</strong>
+                  <span>Punya tanggal_bht</span>
+                </div>
+                <div className="stat">
+                  <strong>{localResult.withNominals ?? "—"}</strong>
+                  <span>Punya nominal</span>
+                </div>
+                <div className="stat">
+                  <strong>{localResult.withPdf ?? "—"}</strong>
+                  <span>Punya path PDF</span>
+                </div>
+              </div>
+            ) : null}
             {localResult.modusDetect ? (
               <div className="grid-3" style={{ marginTop: "0.75rem" }}>
                 <div className="stat">
@@ -401,8 +423,8 @@ export function SippImportPanel() {
                     <th>Nomor</th>
                     <th>Jenis</th>
                     <th>tgl BHT</th>
-                    <th>Basis BHT</th>
-                    <th>Nafkah</th>
+                    <th>Nominal</th>
+                    <th>PDF</th>
                     <th>Usulan</th>
                     <th>Aksi</th>
                   </tr>
@@ -413,14 +435,10 @@ export function SippImportPanel() {
                       <td className="mono">{s.nomor_perkara}</td>
                       <td>{s.jenis_perkara}</td>
                       <td className="mono">{s.tanggal_bht || "—"}</td>
-                      <td>
-                        <span
-                          className={`badge ${s.bht_basis === "tanggal_bht" ? "ok" : "warn"}`}
-                        >
-                          {s.bht_basis || "—"}
-                        </span>
+                      <td className="muted" style={{ fontSize: "0.85rem" }}>
+                        {s.nominal_ringkas || (s.nafkah_signal ? "sinyal teks" : "—")}
                       </td>
-                      <td>{s.nafkah_signal ? "ya" : "—"}</td>
+                      <td>{s.pdf_count ? s.pdf_count : "—"}</td>
                       <td className="muted">
                         {[
                           ...(s.modus_suggested || []),

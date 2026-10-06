@@ -42,7 +42,9 @@ Baca langsung MariaDB/MySQL satker (skema `sipp32`) lewat env **WA-gateway**:
 
 Tombol UI: **Sinkron SIPP Lokal** di `/perkara/impor` (default: Cerai Gugat/Talak, tanggal putusan 2024–2026, BHT = `tanggal_bht` strict, wajib sinyal nafkah).
 
-Usulan koding hanya dari sinyal andal; matriks gap: Agent Store `docs/kebutuhan-data-riset.md`.
+Impor juga **nominal** (anak: `perkara_anak_pihak.jumlah_nafkah`; iddah/mut’ah: kolom typed bila ada / parse amar) dan **path PDF** (`amar_putusan_dok` + …). Set `SIPP_PDF_BASE_URL` untuk link LAN.
+
+Matriks: Agent Store `docs/kebutuhan-data-riset.md`.
 ### B. SIPP publik (cadangan)
 
 - **Base URL publik:** https://sipp.pa-sambas.go.id/

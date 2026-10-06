@@ -213,11 +213,81 @@ export function CaseCodingForm({
       {msg ? <div className="flash ok">{msg}</div> : null}
 
       <div className="flash info" style={{ marginBottom: "1rem" }}>
-        Sinkron SIPP mengimpor <strong>metadata</strong> (identitas, BHT, verstek, amar,
-        pekerjaan, sinyal nafkah). Checklist di bawah adalah operasionalisasi Bab I /
-        wawancara — field naratif Lampiran 1C tetap wajib. Usulan otomatis hanya dari
-        sinyal andal; tadlis/gaya hidup/nominal iddah biasanya butuh PDF putusan.
+        Sinkron SIPP mengimpor identitas, BHT, verstek, amar, pekerjaan,{" "}
+        <strong>nominal iddah/mut&apos;ah/anak</strong> (kolom DB bila ada, else parse amar;
+        anak dari <span className="mono">jumlah_nafkah</span>), serta{" "}
+        <strong>path/URL PDF putusan</strong>. Checklist di bawah tetap untuk koding Bab I /
+        Lampiran 1C; modus dalam (tadlis/gaya hidup) dan maqasid tetap analisis peneliti.
       </div>
+
+      {Boolean(
+        initial.nominal_iddah != null ||
+          initial.nominal_mutah != null ||
+          initial.nominal_hadhanah != null ||
+          initial.putusan_pdf_url ||
+          initial.amar_putusan_dok,
+      ) ? (
+        <div className="panel" style={{ marginBottom: "1rem", padding: "0.85rem 1rem" }}>
+          <div className="block-title" style={{ marginTop: 0 }}>
+            Nominal &amp; PDF dari sync SIPP
+          </div>
+          <div className="grid-2">
+            <div>
+              <p className="muted" style={{ marginBottom: "0.25rem" }}>
+                Iddah:{" "}
+                <span className="mono">
+                  {initial.nominal_iddah != null
+                    ? Number(initial.nominal_iddah).toLocaleString("id-ID")
+                    : "—"}
+                </span>
+              </p>
+              <p className="muted" style={{ marginBottom: "0.25rem" }}>
+                Mut&apos;ah:{" "}
+                <span className="mono">
+                  {initial.nominal_mutah != null
+                    ? Number(initial.nominal_mutah).toLocaleString("id-ID")
+                    : "—"}
+                </span>
+              </p>
+              <p className="muted" style={{ marginBottom: "0.25rem" }}>
+                Nafkah anak:{" "}
+                <span className="mono">
+                  {initial.nominal_hadhanah != null
+                    ? Number(initial.nominal_hadhanah).toLocaleString("id-ID")
+                    : "—"}
+                </span>
+              </p>
+              {initial.nominal_madhiyah != null ? (
+                <p className="muted" style={{ marginBottom: "0.25rem" }}>
+                  Madhiyah:{" "}
+                  <span className="mono">
+                    {Number(initial.nominal_madhiyah).toLocaleString("id-ID")}
+                  </span>
+                </p>
+              ) : null}
+            </div>
+            <div>
+              {typeof initial.putusan_pdf_url === "string" && initial.putusan_pdf_url ? (
+                <p>
+                  <a href={initial.putusan_pdf_url} target="_blank" rel="noreferrer">
+                    Buka PDF putusan
+                  </a>
+                </p>
+              ) : typeof initial.amar_putusan_dok === "string" &&
+                initial.amar_putusan_dok ? (
+                <p className="muted">
+                  Path relatif:{" "}
+                  <span className="mono">{String(initial.amar_putusan_dok)}</span>
+                  <br />
+                  Set <span className="mono">SIPP_PDF_BASE_URL</span> agar menjadi link.
+                </p>
+              ) : (
+                <p className="muted">PDF path belum terisi.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {quality ? (
         <div className="panel" style={{ marginBottom: "1rem", padding: "0.85rem 1rem" }}>
@@ -456,7 +526,10 @@ export function CaseCodingForm({
       <label>Pertimbangan hakim terkait kemampuan ekonomi (1C)</label>
       <textarea value={pertimbangan} onChange={(e) => setPertimbangan(e.target.value)} />
 
-      <label>Nominal yang diputus — ringkas / disamarkan (iddah/mut&apos;ah/anak dari putusan)</label>
+      <label>
+        Nominal yang diputus — ringkas (diisi otomatis dari SIPP: iddah / mut&apos;ah /
+        anak; boleh disunting)
+      </label>
       <input value={nominal} onChange={(e) => setNominal(e.target.value)} />
 
       <div className="block-title">Rubrik maqasid / al-&apos;adl (opsional 1–5; 1C = catatan)</div>

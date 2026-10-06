@@ -130,6 +130,15 @@ function migrate(db: Database.Database) {
     ["pertimbangan_excerpt", "TEXT"],
     ["bht_basis", "TEXT"],
     ["data_quality_json", "TEXT"],
+    ["nominal_iddah", "REAL"],
+    ["nominal_mutah", "REAL"],
+    ["nominal_hadhanah", "REAL"],
+    ["nominal_madhiyah", "REAL"],
+    ["nominal_json", "TEXT"],
+    ["amar_putusan_dok", "TEXT"],
+    ["amar_putusan_anonimisasi_dok", "TEXT"],
+    ["putusan_pdf_json", "TEXT"],
+    ["putusan_pdf_url", "TEXT"],
   ];
   const existing = new Set(
     (
@@ -188,6 +197,15 @@ export type CaseRow = {
   pertimbangan_excerpt?: string | null;
   bht_basis?: string | null;
   data_quality_json?: string | null;
+  nominal_iddah?: number | null;
+  nominal_mutah?: number | null;
+  nominal_hadhanah?: number | null;
+  nominal_madhiyah?: number | null;
+  nominal_json?: string | null;
+  amar_putusan_dok?: string | null;
+  amar_putusan_anonimisasi_dok?: string | null;
+  putusan_pdf_json?: string | null;
+  putusan_pdf_url?: string | null;
 };
 
 export type InformantRow = {

@@ -1,11 +1,15 @@
 /**
  * Penilaian kecukupan data SIPP untuk koding Bab IV / Lampiran 1C.
- * Jujur: banyak field 1C hanya cukup dari putusan PDF + wawancara.
+ * SIPP menyediakan PDF path + nominal (anak terstruktur; iddah/mut’ah dari
+ * kolom typed bila ada / parse amar / PDF).
  */
 
 import type { ObjekNafkahId, ModusId, ResponsId } from "./coding-taxonomy";
 import { MODUS_ASIMETRI, OBJEK_NAFKAH, RESPONS_HAKIM } from "./coding-taxonomy";
 import type { BhtBasis } from "./sipp-local";
+import type { NominalBundle } from "./sipp-nominals";
+import { formatNominalId } from "./sipp-nominals";
+import type { PdfRef } from "./sipp-pdf";
 
 export type Sufficiency = "cukup" | "partial" | "kurang" | "tidak_ada";
 
@@ -63,6 +67,8 @@ export type QualityInput = {
   proses_text?: string | null;
   tahapan_text?: string | null;
   nomor_akta_cerai?: string | null;
+  nominals?: NominalBundle | null;
+  pdf_refs?: PdfRef[] | null;
 };
 
 function preview(raw: string | null | undefined, n = 100): string | null {
@@ -169,11 +175,41 @@ export function assessDataQuality(input: QualityInput): DataQualityReport {
       source: "perkara_anak_pihak.jumlah_nafkah",
       preview:
         anak_sum != null
-          ? String(anak_sum)
+          ? formatNominalId(anak_sum)
           : input.anak_count
             ? `${input.anak_count} anak, nominal kosong`
             : null,
-      note: "Satu-satunya nominal nafkah terstruktur; iddah/mut'ah TIDAK ada kolomnya",
+      note: "Kolom typed double di dump sipp32.sql",
+    },
+    {
+      label: "Nominal iddah",
+      source:
+        input.nominals?.iddah?.source_field ||
+        "perkara_putusan.amar_putusan (parse) / kolom typed bila ada",
+      preview: input.nominals?.iddah
+        ? `${formatNominalId(input.nominals.iddah.amount)} [${input.nominals.iddah.source}]`
+        : null,
+    },
+    {
+      label: "Nominal mut'ah",
+      source:
+        input.nominals?.mutah?.source_field ||
+        "perkara_putusan.amar_putusan (parse) / kolom typed bila ada",
+      preview: input.nominals?.mutah
+        ? `${formatNominalId(input.nominals.mutah.amount)} [${input.nominals.mutah.source}]`
+        : null,
+    },
+    {
+      label: "PDF putusan",
+      source: "perkara_putusan.amar_putusan_dok (+ anon / perkara_dokumen / dirput)",
+      preview: input.pdf_refs?.length
+        ? input.pdf_refs
+            .map((p) => p.url || p.absolute_path || p.relative_path)
+            .join(" | ")
+        : null,
+      note: input.pdf_refs?.length
+        ? "Path relatif ke folder instalasi SIPP; set SIPP_PDF_BASE_URL untuk link LAN"
+        : "Belum ada path di DB untuk perkara ini",
     },
     {
       label: "Akta cerai",
@@ -182,11 +218,21 @@ export function assessDataQuality(input: QualityInput): DataQualityReport {
     },
   ];
 
+  const hasIddah = Boolean(input.nominals?.iddah);
+  const hasMutah = Boolean(input.nominals?.mutah);
+  const hasAnakNom = Boolean(input.nominals?.hadhanah || (anak_sum != null && anak_sum > 0));
+  const hasPdf = Boolean(input.pdf_refs?.length);
+  let nominalSuf: Sufficiency = "kurang";
+  if (hasIddah && hasMutah) nominalSuf = "cukup";
+  else if (hasIddah || hasMutah || hasAnakNom) nominalSuf = "partial";
+  else if (hasPdf || amar_char_count > 500) nominalSuf = "partial";
+  else nominalSuf = "kurang";
+
   const sufficiency: DataQualityReport["sufficiency"] = {
     identitas:
       input.nomor_perkara && input.jenis_perkara ? "cukup" : "kurang",
     verstek_kehadiran: has_verstek_flag ? "cukup" : "kurang",
-    objek_nafkah: objekHits.length || (anak_sum != null && anak_sum > 0)
+    objek_nafkah: objekHits.length || hasAnakNom
       ? amar_char_count > 500
         ? "cukup"
         : "partial"
@@ -201,7 +247,7 @@ export function assessDataQuality(input: QualityInput): DataQualityReport {
           ? "partial"
           : "kurang",
     respons_hakim: has_pertimbangan || amar_char_count > 3000 ? "partial" : "kurang",
-    nominal_iddah_mutah: "tidak_ada", // no structured columns
+    nominal_iddah_mutah: nominalSuf,
     maqasid_evaluasi: "tidak_ada",
   };
 
@@ -216,14 +262,26 @@ export function assessDataQuality(input: QualityInput): DataQualityReport {
       "Belum ada sinyal nafkah di amar/petitum/anak — cek apakah relevan untuk inklusi proposal.",
     );
   }
-  if (sufficiency.nominal_iddah_mutah === "tidak_ada") {
+  if (hasIddah || hasMutah || hasAnakNom) {
+    const bits: string[] = [];
+    if (input.nominals?.iddah)
+      bits.push(`iddah=${formatNominalId(input.nominals.iddah.amount)} (${input.nominals.iddah.source})`);
+    if (input.nominals?.mutah)
+      bits.push(`mut'ah=${formatNominalId(input.nominals.mutah.amount)} (${input.nominals.mutah.source})`);
+    if (input.nominals?.hadhanah)
+      bits.push(`anak=${formatNominalId(input.nominals.hadhanah.amount)} (${input.nominals.hadhanah.source})`);
+    messages.push(`Nominal diimpor dari SIPP: ${bits.join("; ")}.`);
+  } else if (hasPdf) {
     messages.push(
-      "Nominal iddah/mut'ah tidak ada di kolom SIPP — ambil dari amar lengkap / PDF putusan.",
+      "Nominal belum terurai dari kolom/amar — baca angka di PDF putusan (path sudah diimpor).",
     );
+  }
+  if (input.nominals?.notes?.length) {
+    for (const n of input.nominals.notes.slice(0, 2)) messages.push(n);
   }
   if (sufficiency.modus_asimetri_dalam !== "cukup") {
     messages.push(
-      "Data kurang untuk kode modus dalam (tadlis, penyembunyian aset, gaya hidup) — butuh putusan/PDF + koding manual.",
+      "Data kurang untuk kode modus dalam (tadlis, penyembunyian aset, gaya hidup) — butuh baca PDF + koding manual.",
     );
   }
   if (objekHits.length) {
@@ -238,8 +296,13 @@ export function assessDataQuality(input: QualityInput): DataQualityReport {
   const cukupCount = Object.values(sufficiency).filter((s) => s === "cukup").length;
   const summary =
     cukupCount >= 2
-      ? `Metadata SIPP: ${cukupCount} aspek cukup; nominal iddah/mut'ah & evaluasi maqasid tetap dari putusan/PDF.`
-      : "Data SIPP tipis untuk koding 1C — prioritaskan unduh/baca putusan berizin.";
+      ? `Metadata SIPP: ${cukupCount} aspek cukup` +
+        (hasIddah || hasMutah || hasAnakNom
+          ? "; nominal diimpor (DB/anak/amar)."
+          : hasPdf
+            ? "; PDF path tersedia di LAN satker."
+            : "; lengkapi nominal dari amar/PDF bila perlu.")
+      : "Data SIPP tipis untuk koding 1C — sync ulang atau baca PDF putusan.";
 
   return {
     bht_basis: input.bht_basis || (input.tanggal_bht ? "tanggal_bht" : "none"),

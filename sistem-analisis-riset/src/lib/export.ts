@@ -3,6 +3,27 @@ import { getDb, parseJsonArray, parseJsonObject, type CaseRow } from "./db";
 
 function caseToFlat(c: CaseRow, publicExport = false) {
   const maqasid = parseJsonObject(c.maqasid_json);
+  let nominalMeta: Record<string, unknown> = {};
+  try {
+    nominalMeta = c.nominal_json
+      ? (JSON.parse(c.nominal_json) as Record<string, unknown>)
+      : {};
+  } catch {
+    nominalMeta = {};
+  }
+  const iddahSrc =
+    nominalMeta.iddah && typeof nominalMeta.iddah === "object"
+      ? String((nominalMeta.iddah as { source?: string }).source || "")
+      : "";
+  const mutahSrc =
+    nominalMeta.mutah && typeof nominalMeta.mutah === "object"
+      ? String((nominalMeta.mutah as { source?: string }).source || "")
+      : "";
+  const anakSrc =
+    nominalMeta.hadhanah && typeof nominalMeta.hadhanah === "object"
+      ? String((nominalMeta.hadhanah as { source?: string }).source || "")
+      : "";
+
   return {
     kode_berkas: c.kode_berkas,
     nomor_perkara: publicExport || c.nomor_perkara_masked ? c.kode_berkas : c.nomor_perkara,
@@ -20,6 +41,15 @@ function caseToFlat(c: CaseRow, publicExport = false) {
     indikasi_asimetri: c.indikasi_asimetri,
     pertimbangan_hakim: c.pertimbangan_hakim,
     nominal_ringkas: c.nominal_ringkas,
+    nominal_iddah: c.nominal_iddah ?? "",
+    nominal_iddah_sumber: iddahSrc,
+    nominal_mutah: c.nominal_mutah ?? "",
+    nominal_mutah_sumber: mutahSrc,
+    nominal_hadhanah_anak: c.nominal_hadhanah ?? "",
+    nominal_hadhanah_sumber: anakSrc,
+    nominal_madhiyah: c.nominal_madhiyah ?? "",
+    amar_putusan_dok: c.amar_putusan_dok || "",
+    putusan_pdf_url: c.putusan_pdf_url || "",
     skor_hifz_al_mal: maqasid.hifz_al_mal ?? "",
     skor_hifz_al_nasl: maqasid.hifz_al_nasl ?? "",
     skor_al_adl: maqasid.al_adl ?? "",

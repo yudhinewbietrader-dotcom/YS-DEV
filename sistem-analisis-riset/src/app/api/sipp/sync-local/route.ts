@@ -35,6 +35,9 @@ export async function POST(req: Request) {
       dateFrom: body.dateFrom || body.date_from || null,
       dateTo: body.dateTo || body.date_to || null,
       onlyBht: body.onlyBht !== false,
+      bhtMode: body.bhtMode || body.bht_mode || undefined,
+      requireNafkah: body.requireNafkah !== false && body.require_nafkah !== false,
+      dateField: body.dateField || body.date_field || "putusan",
       limit: Number(body.limit || 500),
       refreshExisting: body.refreshExisting !== false,
     });

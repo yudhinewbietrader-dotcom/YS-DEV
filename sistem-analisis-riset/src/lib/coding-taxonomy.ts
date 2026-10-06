@@ -1,11 +1,21 @@
-/** Kategori pengodean selaras Lampiran 1C & rumusan masalah proposal. */
+/**
+ * Kategori pengodean — operasionalisasi app dari Bab I + instrumen wawancara +
+ * field terbuka Lampiran 1C (proposal). Bukan daftar kode literal tertutup di 1C.
+ *
+ * 1C mensyaratkan pencatatan: jenis nafkah, pekerjaan, kehadiran, bukti,
+ * indikasi asimetri, pertimbangan, ex officio/hakim aktif, nominal, catatan maqasid.
+ * Checklist di bawah membantu konsistensi Bab IV; field naratif tetap wajib.
+ */
 
 export const MODUS_ASIMETRI = [
   { id: "informal", label: "Sektor informal / minim dokumen" },
   { id: "pmi", label: "PMI / pendapatan lintas negara" },
   { id: "wiraswasta", label: "Wiraswasta mandiri (fluktuatif)" },
-  { id: "verstek", label: "Perkara verstek" },
-  { id: "penyembunyian_aset", label: "Indikasi penyembunyian aset" },
+  {
+    id: "verstek",
+    label: "Konteks perkara verstek (faktor pembuktian)",
+  },
+  { id: "penyembunyian_aset", label: "Indikasi penyembunyian aset / tadlis" },
   { id: "slip_gaji", label: "Slip gaji / bukti formal problematik" },
   { id: "pengakuan_tidak_mampu", label: "Pengakuan tidak mampu sepihak" },
   { id: "gaya_hidup_tidak_sesuai", label: "Ketidaksesuaian gaya hidup/aset" },
@@ -22,11 +32,12 @@ export const RESPONS_HAKIM = [
   { id: "lainnya", label: "Lainnya" },
 ] as const;
 
+/** Fokus proposal: iddah, mut'ah, nafkah anak. Madhiyah sekunder bila muncul. */
 export const OBJEK_NAFKAH = [
   { id: "iddah", label: "Nafkah iddah" },
   { id: "mutah", label: "Mut'ah" },
   { id: "hadhanah", label: "Nafkah anak / hadhanah" },
-  { id: "madhiyah", label: "Nafkah madhiyah (jika muncul)" },
+  { id: "madhiyah", label: "Nafkah madhiyah (sekunder, jika muncul)" },
 ] as const;
 
 export const STATUS_PEKERJAAN = [
@@ -45,6 +56,7 @@ export const KEHADIRAN = [
   { id: "tidak_jelas", label: "Tidak jelas di putusan" },
 ] as const;
 
+/** Rubrik opsional peneliti (1C = catatan naratif; skor membantu agregasi Bab IV). */
 export const MAQASID_RUBRIC = [
   {
     id: "hifz_al_mal",

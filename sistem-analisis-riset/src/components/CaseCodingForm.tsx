@@ -19,9 +19,27 @@ type Suggestion = {
   field: string;
 };
 
+type QualityReport = {
+  summary?: string;
+  messages?: string[];
+  sufficiency?: Record<string, string>;
+  provenance?: Array<{
+    label: string;
+    source: string;
+    preview: string | null;
+    note?: string;
+  }>;
+  bht_basis?: string;
+  amar_char_count?: number;
+  amar_truncated?: boolean;
+};
+
 type SuggestionsBundle = {
   suggestions: Suggestion[];
+  objek_suggestions?: Suggestion[];
+  respons_suggestions?: Suggestion[];
   empty_reason: string | null;
+  quality?: QualityReport;
   detected_at?: string;
   source?: string;
 } | null;
@@ -30,16 +48,24 @@ type Props = {
   id?: number;
   initial?: Record<string, unknown>;
   initialSuggestions?: SuggestionsBundle;
+  initialQuality?: QualityReport | null;
 };
 
 function toggle(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
 }
 
+function sufBadge(s?: string) {
+  if (s === "cukup") return "ok";
+  if (s === "partial") return "warn";
+  return "muted";
+}
+
 export function CaseCodingForm({
   id,
   initial = {},
   initialSuggestions = null,
+  initialQuality = null,
 }: Props) {
   const router = useRouter();
   const [msg, setMsg] = useState("");
@@ -49,6 +75,8 @@ export function CaseCodingForm({
   const [suggestions, setSuggestions] = useState<SuggestionsBundle>(
     initialSuggestions,
   );
+  const quality =
+    suggestions?.quality || initialQuality || null;
 
   const [nomor_perkara, setNomor] = useState(String(initial.nomor_perkara || ""));
   const [jenis_perkara, setJenis] = useState(String(initial.jenis_perkara || ""));
@@ -151,32 +179,33 @@ export function CaseCodingForm({
     }
     setSuggestions({
       suggestions: data.suggestions || [],
+      objek_suggestions: data.objek_suggestions || [],
+      respons_suggestions: data.respons_suggestions || [],
       empty_reason: data.empty_reason || null,
+      quality: data.quality,
       detected_at: new Date().toISOString(),
       source: "case_redetect",
     });
-    if (!data.skippedConfirmed && Array.isArray(data.suggestions)) {
-      const ids = data.suggestions.map((s: Suggestion) => s.id);
-      if (ids.length && modus.length === 0) setModus(ids);
+    if (!data.skippedConfirmed) {
+      const med = (data.suggestions || []).filter(
+        (s: Suggestion) => s.confidence === "med",
+      );
+      if (med.length && modus.length === 0) {
+        setModus(med.map((s: Suggestion) => s.id));
+      }
     }
     setMsg(
-      data.suggestions?.length
-        ? `Usulan: ${data.suggestions.length} modus. ${data.skippedConfirmed ? "(koding terkonfirmasi tidak ditimpa)" : "Dapat diterima ke checklist."}`
+      data.suggestions?.length || data.objek_suggestions?.length
+        ? `Usulan andal diperbarui. ${data.skippedConfirmed ? "(koding terkonfirmasi tidak ditimpa)" : ""}`
         : data.empty_reason || "Belum terdeteksi.",
     );
     router.refresh();
   }
 
-  function acceptSuggestion(sid: string) {
-    setModus((prev) => (prev.includes(sid) ? prev : [...prev, sid]));
-  }
-
-  function acceptAllSuggestions() {
-    const ids = suggestions?.suggestions?.map((s) => s.id) || [];
-    setModus((prev) => [...new Set([...prev, ...ids])]);
-  }
-
   const suggestionList = suggestions?.suggestions || [];
+  const objekSug = suggestions?.objek_suggestions || [];
+  const responsSug = suggestions?.respons_suggestions || [];
+  const suf = quality?.sufficiency || {};
 
   return (
     <form onSubmit={onSubmit}>
@@ -184,12 +213,64 @@ export function CaseCodingForm({
       {msg ? <div className="flash ok">{msg}</div> : null}
 
       <div className="flash info" style={{ marginBottom: "1rem" }}>
-        Sinkron SIPP mengimpor <strong>metadata</strong> perkara (status, BHT, verstek,
-        cuplikan amar, pekerjaan pihak). Modus asimetri dapat diisi lewat{" "}
-        <strong>usulan otomatis (heuristik)</strong> — bukan klasifikasi final. Periksa
-        bukti, lalu konfirmasi manual. Modus seperti tadlis/PMI sering butuh teks putusan
-        lengkap.
+        Sinkron SIPP mengimpor <strong>metadata</strong> (identitas, BHT, verstek, amar,
+        pekerjaan, sinyal nafkah). Checklist di bawah adalah operasionalisasi Bab I /
+        wawancara — field naratif Lampiran 1C tetap wajib. Usulan otomatis hanya dari
+        sinyal andal; tadlis/gaya hidup/nominal iddah biasanya butuh PDF putusan.
       </div>
+
+      {quality ? (
+        <div className="panel" style={{ marginBottom: "1rem", padding: "0.85rem 1rem" }}>
+          <div className="block-title" style={{ marginTop: 0 }}>
+            Kecukupan data SIPP untuk koding
+          </div>
+          <p style={{ marginBottom: "0.5rem" }}>{quality.summary}</p>
+          <div className="checks" style={{ marginBottom: "0.75rem" }}>
+            {Object.entries(suf).map(([k, v]) => (
+              <span key={k} className={`badge ${sufBadge(v)}`} title={k}>
+                {k}: {v}
+              </span>
+            ))}
+          </div>
+          {quality.messages?.length ? (
+            <ul style={{ margin: "0 0 0.75rem", paddingLeft: "1.1rem" }}>
+              {quality.messages.map((m, i) => (
+                <li key={i} className="muted">
+                  {m}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <details>
+            <summary className="muted">Provenance field (sumber SIPP)</summary>
+            <table className="data" style={{ marginTop: "0.5rem" }}>
+              <thead>
+                <tr>
+                  <th>Label</th>
+                  <th>Sumber</th>
+                  <th>Isi</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(quality.provenance || []).map((p) => (
+                  <tr key={p.source + p.label}>
+                    <td>{p.label}</td>
+                    <td className="mono muted">{p.source}</td>
+                    <td>
+                      {p.preview || "—"}
+                      {p.note ? (
+                        <div className="muted" style={{ fontSize: "0.85rem" }}>
+                          {p.note}
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </div>
+      ) : null}
 
       <div className="grid-2">
         <div>
@@ -201,7 +282,7 @@ export function CaseCodingForm({
           <input value={tanggal_register} onChange={(e) => setTanggal(e.target.value)} />
           <label>Status perkara (SIPP)</label>
           <input value={status_perkara} onChange={(e) => setStatus(e.target.value)} />
-          <label>Tahun</label>
+          <label>Tahun (dokumen / putusan)</label>
           <input value={tahun} onChange={(e) => setTahun(e.target.value)} />
         </div>
         <div>
@@ -228,12 +309,12 @@ export function CaseCodingForm({
             <option value="draft">draft</option>
             <option value="coded">coded</option>
           </select>
-          <label>Bukti pendapatan yang diajukan</label>
+          <label>Bukti pendapatan yang diajukan (1C — dari putusan)</label>
           <textarea value={bukti_pendapatan} onChange={(e) => setBukti(e.target.value)} />
         </div>
       </div>
 
-      <div className="block-title">Objek nafkah</div>
+      <div className="block-title">Objek nafkah (fokus: iddah, mut&apos;ah, anak)</div>
       <div className="checks">
         {OBJEK_NAFKAH.map((o) => (
           <label key={o.id}>
@@ -243,11 +324,16 @@ export function CaseCodingForm({
               onChange={() => setObjek(toggle(objek, o.id))}
             />
             {o.label}
+            {objekSug.some((s) => s.id === o.id) ? (
+              <span className="badge warn" style={{ marginLeft: 6 }}>
+                usulan
+              </span>
+            ) : null}
           </label>
         ))}
       </div>
 
-      <div className="block-title">Modus asimetri informasi</div>
+      <div className="block-title">Modus / indikasi asimetri (operasionalisasi)</div>
       <div className="checks">
         {MODUS_ASIMETRI.map((o) => (
           <label key={o.id}>
@@ -268,7 +354,7 @@ export function CaseCodingForm({
 
       <div className="panel" style={{ marginTop: "0.75rem", padding: "0.85rem 1rem" }}>
         <div className="block-title" style={{ marginTop: 0 }}>
-          Usulan otomatis (heuristik SIPP)
+          Usulan andal dari SIPP
         </div>
         {id ? (
           <div className="actions" style={{ marginBottom: "0.5rem" }}>
@@ -278,46 +364,67 @@ export function CaseCodingForm({
               disabled={detecting || saving}
               onClick={() => redetectModus()}
             >
-              {detecting ? "Mendeteksi…" : "Deteksi ulang modus"}
+              {detecting ? "Mendeteksi…" : "Deteksi ulang"}
             </button>
-            {suggestionList.length > 0 ? (
-              <button
-                className="btn ghost"
-                type="button"
-                onClick={() => acceptAllSuggestions()}
-              >
-                Terima semua usulan
-              </button>
-            ) : null}
           </div>
-        ) : (
-          <p className="muted">Simpan berkas dulu untuk menjalankan deteksi.</p>
-        )}
-
-        {suggestionList.length > 0 ? (
+        ) : null}
+        {suggestionList.length || objekSug.length || responsSug.length ? (
           <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.1rem" }}>
             {suggestionList.map((s) => (
-              <li key={s.id} style={{ marginBottom: "0.45rem" }}>
-                <strong>{s.label}</strong>{" "}
+              <li key={"m-" + s.id} style={{ marginBottom: "0.4rem" }}>
+                <strong>Modus: {s.label}</strong>{" "}
                 <span className={`badge ${s.confidence === "med" ? "ok" : "warn"}`}>
                   {s.confidence}
                 </span>{" "}
                 <span className="muted mono">({s.field})</span>
-                <div className="muted" style={{ fontSize: "0.9rem" }}>
-                  “{s.evidence}”
-                </div>
+                <div className="muted">“{s.evidence}”</div>
                 {!modus.includes(s.id) ? (
                   <button
                     type="button"
                     className="btn ghost"
-                    style={{ marginTop: 4 }}
-                    onClick={() => acceptSuggestion(s.id)}
+                    onClick={() => setModus((p) => [...p, s.id])}
                   >
                     Terima
                   </button>
                 ) : (
                   <span className="badge ok">di checklist</span>
                 )}
+              </li>
+            ))}
+            {objekSug.map((s) => (
+              <li key={"o-" + s.id} style={{ marginBottom: "0.4rem" }}>
+                <strong>Objek: {s.label}</strong>{" "}
+                <span className={`badge ${s.confidence === "med" ? "ok" : "warn"}`}>
+                  {s.confidence}
+                </span>
+                <div className="muted">“{s.evidence}”</div>
+                {!objek.includes(s.id) ? (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => setObjek((p) => [...p, s.id])}
+                  >
+                    Terima
+                  </button>
+                ) : null}
+              </li>
+            ))}
+            {responsSug.map((s) => (
+              <li key={"r-" + s.id} style={{ marginBottom: "0.4rem" }}>
+                <strong>Respons: {s.label}</strong>{" "}
+                <span className={`badge ${s.confidence === "med" ? "ok" : "warn"}`}>
+                  {s.confidence}
+                </span>
+                <div className="muted">“{s.evidence}”</div>
+                {!respons.includes(s.id) ? (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => setRespons((p) => [...p, s.id])}
+                  >
+                    Terima
+                  </button>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -343,16 +450,16 @@ export function CaseCodingForm({
         ))}
       </div>
 
-      <label>Indikasi asimetri informasi</label>
+      <label>Indikasi asimetri informasi (1C — naratif)</label>
       <textarea value={indikasi} onChange={(e) => setIndikasi(e.target.value)} />
 
-      <label>Pertimbangan hakim terkait kemampuan ekonomi</label>
+      <label>Pertimbangan hakim terkait kemampuan ekonomi (1C)</label>
       <textarea value={pertimbangan} onChange={(e) => setPertimbangan(e.target.value)} />
 
-      <label>Nominal yang diputus (ringkas / disamarkan)</label>
+      <label>Nominal yang diputus — ringkas / disamarkan (iddah/mut&apos;ah/anak dari putusan)</label>
       <input value={nominal} onChange={(e) => setNominal(e.target.value)} />
 
-      <div className="block-title">Rubrik maqasid / al-&apos;adl (1–5)</div>
+      <div className="block-title">Rubrik maqasid / al-&apos;adl (opsional 1–5; 1C = catatan)</div>
       <div className="grid-2">
         {MAQASID_RUBRIC.map((r) => (
           <div key={r.id}>
@@ -374,7 +481,7 @@ export function CaseCodingForm({
         ))}
       </div>
 
-      <label>Catatan evaluasi maqasid / keadilan distribusi</label>
+      <label>Catatan evaluasi maqasid / keadilan distribusi (1C — analisis peneliti)</label>
       <textarea value={evaluasi} onChange={(e) => setEvaluasi(e.target.value)} />
 
       <label>Kutipan bukti / putusan (evidence quotes)</label>

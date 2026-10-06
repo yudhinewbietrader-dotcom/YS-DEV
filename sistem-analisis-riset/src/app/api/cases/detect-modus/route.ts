@@ -25,13 +25,17 @@ export async function POST(req: Request) {
       return NextResponse.json({
         caseId,
         suggestions: out.result.suggestions,
+        objek_suggestions: out.result.objek_suggestions,
+        respons_suggestions: out.result.respons_suggestions,
+        quality: out.result.quality,
         empty_reason: out.result.empty_reason,
         appliedSoft: out.appliedSoft,
         skippedConfirmed: out.skippedConfirmed,
         note:
-          out.result.suggestions.length === 0
+          out.result.suggestions.length === 0 &&
+          out.result.objek_suggestions.length === 0
             ? out.result.empty_reason
-            : "Usulan disimpan. Koding coded / modus yang sudah diisi tidak ditimpa.",
+            : "Usulan andal disimpan. Koding coded / modus terisi tidak ditimpa.",
       });
     }
 

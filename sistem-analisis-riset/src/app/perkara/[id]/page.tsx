@@ -18,6 +18,9 @@ export default async function CaseDetailPage({ params }: Props) {
   if (!row) notFound();
 
   const suggestions = parseModusSuggestions(row.modus_suggestions_json);
+  const qualityStored = row.data_quality_json
+    ? parseJsonObject(row.data_quality_json)
+    : null;
 
   const initial = {
     nomor_perkara: row.nomor_perkara,
@@ -63,6 +66,17 @@ export default async function CaseDetailPage({ params }: Props) {
         <p style={{ color: "var(--ink)" }}>
           {row.jenis_perkara || "—"} · {row.para_pihak_masked || "Disamarkan"} · sumber{" "}
           <span className="badge muted">{row.sumber}</span>
+          {row.bht_basis ? (
+            <>
+              {" "}
+              · BHT{" "}
+              <span
+                className={`badge ${row.bht_basis === "tanggal_bht" ? "ok" : "warn"}`}
+              >
+                {row.bht_basis}
+              </span>
+            </>
+          ) : null}
         </p>
         {row.sipp_detail_url ? (
           <p>
@@ -79,7 +93,7 @@ export default async function CaseDetailPage({ params }: Props) {
         row.nomor_akta_cerai ||
         row.sipp_perkara_id) && (
         <section className="panel">
-          <h2>Data SIPP lokal (read-only sync)</h2>
+          <h2>Data SIPP lokal (read-only)</h2>
           <div className="grid-2">
             <div>
               <p className="muted" style={{ marginBottom: "0.35rem" }}>
@@ -107,6 +121,13 @@ export default async function CaseDetailPage({ params }: Props) {
                   ? localExtra.pekerjaan_pihak2
                   : "—"}
               </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Nafkah anak (jumlah_nafkah sum):{" "}
+                {localExtra.anak_jumlah_nafkah_sum != null
+                  ? String(localExtra.anak_jumlah_nafkah_sum)
+                  : "—"}{" "}
+                · anak: {localExtra.anak_count != null ? String(localExtra.anak_count) : "—"}
+              </p>
             </div>
             <div>
               <p className="muted" style={{ marginBottom: "0.35rem" }}>
@@ -122,6 +143,13 @@ export default async function CaseDetailPage({ params }: Props) {
                 Akta cerai: {row.nomor_akta_cerai || "—"} (
                 <span className="mono">{row.tgl_akta_cerai || "—"}</span>)
               </p>
+              <p className="muted" style={{ marginBottom: "0.35rem" }}>
+                Panjang amar di DB:{" "}
+                {localExtra.amar_char_count != null
+                  ? String(localExtra.amar_char_count)
+                  : "—"}
+                {localExtra.amar_truncated ? " (cuplikan terpotong di impor)" : ""}
+              </p>
             </div>
           </div>
           {row.amar_excerpt ? (
@@ -130,6 +158,27 @@ export default async function CaseDetailPage({ params }: Props) {
               <p style={{ color: "var(--ink)", whiteSpace: "pre-wrap" }}>{row.amar_excerpt}</p>
             </>
           ) : null}
+          {row.petitum_excerpt ? (
+            <>
+              <div className="block-title">Cuplikan petitum</div>
+              <p className="muted" style={{ whiteSpace: "pre-wrap" }}>
+                {row.petitum_excerpt}
+              </p>
+            </>
+          ) : null}
+          {row.pertimbangan_excerpt ? (
+            <>
+              <div className="block-title">Cuplikan pertimbangan hukum (SIPP)</div>
+              <p className="muted" style={{ whiteSpace: "pre-wrap" }}>
+                {row.pertimbangan_excerpt}
+              </p>
+            </>
+          ) : (
+            <p className="muted">
+              Tabel pertimbangan_hukum kosong/tidak terisi — isi pertimbangan dari PDF
+              putusan.
+            </p>
+          )}
         </section>
       )}
 
@@ -138,6 +187,11 @@ export default async function CaseDetailPage({ params }: Props) {
           id={row.id}
           initial={initial}
           initialSuggestions={suggestions}
+          initialQuality={
+            (suggestions?.quality as Record<string, unknown>) ||
+            (qualityStored as Record<string, unknown>) ||
+            null
+          }
         />
       </section>
     </ResearchShell>

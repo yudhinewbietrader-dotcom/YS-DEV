@@ -3,14 +3,15 @@
  *
  * Env primer mengikuti pola WA-gateway:
  *   SIPP_ENABLED, SIPP_HOST, SIPP_PORT, SIPP_DB, SIPP_USER, SIPP_PASSWORD, SIPP_CHARSET
- * Alias tambahan: SIPP_DB_* dan DB_* (lihat .env.example).
  *
- * Mapping tabel/kolom: sipp32.sql — docs/sipp-lokal-sync.md
+ * Mapping tabel/kolom: sipp32.sql — docs/kebutuhan-data-riset.md
  *
- * Keamanan:
- * - Hanya SELECT (assertSelectOnly)
- * - Kredensial dari env user — jangan commit password
- * - Tidak ada bypass SIPP web
+ * Filter riset (proposal Bab III):
+ * - Jenis: Cerai Gugat / Cerai Talak (keyword, bisa diedit)
+ * - Nafkah: sinyal di amar/petitum/posita ATAU perkara_anak_pihak.jumlah_nafkah
+ * - BHT: tanggal_bht = ground truth; proxy akta/proses opsional & ditandai
+ *
+ * Keamanan: SELECT-only; kredensial dari env user.
  */
 
 import mysql, { type Pool, type RowDataPacket } from "mysql2/promise";
@@ -24,6 +25,13 @@ export type SippLocalConfig = {
   database: string;
   charset: string;
 };
+
+/** Basis filter BHT yang dipakai untuk baris ini */
+export type BhtBasis =
+  | "tanggal_bht"
+  | "akta_cerai"
+  | "proses_proxy"
+  | "none";
 
 export type SippLocalCase = {
   perkara_id: number;
@@ -43,16 +51,31 @@ export type SippLocalCase = {
   tanggal_bht: string | null;
   putusan_verstek: string | null;
   status_putusan_nama: string | null;
+  /** Cuplikan amar (hingga ~12k karakter dari LONGTEXT) */
   amar_excerpt: string | null;
+  amar_char_count: number;
+  amar_truncated: boolean;
+  petitum_excerpt: string | null;
+  posita_excerpt: string | null;
+  pertimbangan_excerpt: string | null;
   nomor_akta_cerai: string | null;
   tgl_akta_cerai: string | null;
   tgl_penyerahan_akta_cerai: string | null;
   jenis_cerai: string | null;
-  /** Pekerjaan pihak1 (penggugat/pemohon) dari tabel pihak — untuk heuristik modus */
   pekerjaan_pihak1: string | null;
-  /** Pekerjaan pihak2 (tergugat/termohon) */
   pekerjaan_pihak2: string | null;
+  /** Jumlah baris anak di perkara_anak_pihak */
+  anak_count: number;
+  /** Sum jumlah_nafkah anak (satu-satunya nominal nafkah terstruktur di skema) */
+  anak_jumlah_nafkah_sum: number | null;
+  bht_basis: BhtBasis;
+  nafkah_signal: boolean;
 };
+
+export type BhtMode = "strict" | "prefer" | "none";
+export type DateField = "pendaftaran" | "putusan";
+
+const AMAR_FETCH_CHARS = 12000;
 
 const globalForSipp = globalThis as unknown as {
   __sippLocalPool?: Pool;
@@ -73,7 +96,6 @@ function firstEnv(...keys: string[]): string {
 }
 
 export function getSippLocalConfig(): SippLocalConfig {
-  // Primer: pola WA-gateway; lalu SIPP_DB_*; lalu DB_*
   const enabledFlag = firstEnv("SIPP_ENABLED", "SIPP_DB_ENABLED");
   const host = firstEnv("SIPP_HOST", "SIPP_DB_HOST", "DB_HOST");
   const user = firstEnv("SIPP_USER", "SIPP_DB_USER", "DB_USER");
@@ -176,14 +198,11 @@ export async function testSippLocalConnection(): Promise<{
 function toDateParam(raw?: string | null): string | null {
   if (!raw) return null;
   const t = raw.trim();
-  // YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-  // DD/MM/YYYY or DD-MM-YYYY
   const m1 = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
   if (m1) {
     return `${m1[3]}-${m1[2].padStart(2, "0")}-${m1[1].padStart(2, "0")}`;
   }
-  // "01 Jan 2024"
   const months: Record<string, string> = {
     jan: "01",
     january: "01",
@@ -230,60 +249,129 @@ function toDateParam(raw?: string | null): string | null {
   return null;
 }
 
+function resolveBhtBasis(row: {
+  tanggal_bht: string | null;
+  has_akta: boolean;
+  proses: string | null;
+}): BhtBasis {
+  if (row.tanggal_bht) return "tanggal_bht";
+  if (row.has_akta) return "akta_cerai";
+  const p = (row.proses || "").toLowerCase();
+  if (
+    p.includes("akta cerai") ||
+    p.includes("bht") ||
+    p.includes("berkekuatan") ||
+    p.includes("inkracht")
+  ) {
+    return "proses_proxy";
+  }
+  return "none";
+}
+
 /**
- * Cari perkara BHT/final dari SIPP lokal.
- * Asumsi mapping (sipp32.sql):
- * - perkara (inti)
- * - perkara_putusan.tanggal_bht
- * - perkara_akta_cerai (proxy pasca-BHT cerai)
- * - proses_terakhir_text mengandung Akta Cerai / BHT / Berkekuatan
+ * Cari perkara cerai relevan untuk riset asimetri nafkah.
+ *
+ * Kolom yang diimpor (eksplisit, dari sipp32.sql):
+ * - perkara.* (identitas, jenis, proses, tahapan, pihak text, posita/petitum)
+ * - perkara_putusan: tanggal_*, putusan_verstek, status_*, amar_putusan (LONGTEXT)
+ * - perkara_pertimbangan_hukum.pertimbangan_hukum (jika ada)
+ * - perkara_akta_cerai.*
+ * - pihak.pekerjaan via perkara_pihak1/2
+ * - perkara_anak_pihak.jumlah_nafkah (satu-satunya nominal nafkah terstruktur)
+ *
+ * Tidak ada kolom SIPP untuk iddah/mut'ah/madhiyah/ex officio/penghasilan pihak.
  */
 export async function searchSippLocalBht(opts: {
   keywords: string[];
   dateFrom?: string | null;
   dateTo?: string | null;
+  /** @deprecated gunakan bhtMode */
   onlyBht?: boolean;
+  bhtMode?: BhtMode;
+  requireNafkah?: boolean;
+  dateField?: DateField;
   limit?: number;
 }): Promise<SippLocalCase[]> {
   const keywords = opts.keywords.map((k) => k.trim()).filter(Boolean);
   if (keywords.length === 0) throw new Error("Minimal satu kata kunci");
 
-  const onlyBht = opts.onlyBht !== false;
+  const bhtMode: BhtMode =
+    opts.bhtMode ||
+    (opts.onlyBht === false ? "none" : "strict");
+  const requireNafkah = opts.requireNafkah !== false;
+  const dateField: DateField = opts.dateField || "putusan";
   const limit = Math.max(1, Math.min(opts.limit ?? 500, 2000));
   const dateFrom = toDateParam(opts.dateFrom);
   const dateTo = toDateParam(opts.dateTo);
 
   const keywordConds: string[] = [];
-  const params: Record<string, string | number> = { limit };
+  const params: Record<string, string | number> = {
+    limit,
+    amarLen: AMAR_FETCH_CHARS,
+  };
 
   keywords.forEach((kw, i) => {
     const key = `kw${i}`;
     params[key] = `%${kw}%`;
+    // Fokus jenis perkara (bukan proses) agar tidak noisy
     keywordConds.push(
-      `(p.jenis_perkara_nama LIKE :${key} OR p.jenis_perkara_text LIKE :${key} OR p.nomor_perkara LIKE :${key} OR p.proses_terakhir_text LIKE :${key})`,
+      `(p.jenis_perkara_nama LIKE :${key} OR p.jenis_perkara_text LIKE :${key} OR p.nomor_perkara LIKE :${key})`,
     );
   });
 
-  const bhtClause = onlyBht
-    ? `AND (
+  let bhtClause = "";
+  if (bhtMode === "strict") {
+    // Ground truth proposal-operasional: hanya tanggal_bht
+    bhtClause = "AND pp.tanggal_bht IS NOT NULL";
+  } else if (bhtMode === "prefer") {
+    bhtClause = `AND (
         pp.tanggal_bht IS NOT NULL
         OR ac.perkara_id IS NOT NULL
         OR p.proses_terakhir_text LIKE '%Akta Cerai%'
         OR p.proses_terakhir_text LIKE '%BHT%'
         OR p.proses_terakhir_text LIKE '%Berkekuatan%'
         OR p.proses_terakhir_text LIKE '%inkracht%'
+      )`;
+  }
+  // bhtMode === "none": tidak filter BHT (proposal literal tidak mensyaratkan BHT)
+
+  const nafkahClause = requireNafkah
+    ? `AND (
+        pp.amar_putusan LIKE '%nafkah%'
+        OR pp.amar_putusan LIKE '%iddah%'
+        OR pp.amar_putusan LIKE '%mut%ah%'
+        OR pp.amar_putusan LIKE '%mutah%'
+        OR pp.amar_putusan LIKE '%hadhanah%'
+        OR pp.amar_putusan LIKE '%madhiyah%'
+        OR p.petitum LIKE '%nafkah%'
+        OR p.petitum LIKE '%iddah%'
+        OR p.petitum LIKE '%mut%ah%'
+        OR p.petitum LIKE '%mutah%'
+        OR p.petitum LIKE '%hadhanah%'
+        OR p.posita LIKE '%nafkah%'
+        OR EXISTS (
+          SELECT 1 FROM perkara_anak_pihak pap
+          WHERE pap.perkara_id = p.perkara_id
+            AND pap.jumlah_nafkah IS NOT NULL
+            AND pap.jumlah_nafkah > 0
+        )
       )`
     : "";
 
   let dateClause = "";
+  const dateCol =
+    dateField === "putusan" ? "pp.tanggal_putusan" : "p.tanggal_pendaftaran";
   if (dateFrom) {
     params.dateFrom = dateFrom;
-    dateClause += " AND p.tanggal_pendaftaran >= :dateFrom";
+    dateClause += ` AND ${dateCol} >= :dateFrom`;
   }
   if (dateTo) {
     params.dateTo = dateTo;
-    dateClause += " AND p.tanggal_pendaftaran <= :dateTo";
+    dateClause += ` AND ${dateCol} <= :dateTo`;
   }
+
+  // Harus ada putusan agar amar/verstek tersedia
+  const mustHavePutusan = "AND pp.perkara_id IS NOT NULL";
 
   const sql = `
     SELECT
@@ -299,71 +387,132 @@ export async function searchSippLocalBht(opts: {
       p.pihak1_text,
       p.pihak2_text,
       p.pihak_dipublikasikan,
+      LEFT(p.petitum, 4000) AS petitum_excerpt,
+      LEFT(p.posita, 2500) AS posita_excerpt,
       pp.tanggal_putusan,
       pp.tanggal_minutasi,
       pp.tanggal_bht,
       pp.putusan_verstek,
       pp.status_putusan_nama,
-      LEFT(pp.amar_putusan, 2000) AS amar_excerpt,
+      LEFT(pp.amar_putusan, :amarLen) AS amar_excerpt,
+      CHAR_LENGTH(pp.amar_putusan) AS amar_char_count,
+      LEFT(ph.pertimbangan_hukum, 5000) AS pertimbangan_excerpt,
       ac.nomor_akta_cerai,
       ac.tgl_akta_cerai,
       ac.tgl_penyerahan_akta_cerai,
       ac.jenis_cerai,
+      (ac.perkara_id IS NOT NULL) AS has_akta,
       (
-        SELECT ph.pekerjaan
+        SELECT ph1.pekerjaan
         FROM perkara_pihak1 pp1
-        JOIN pihak ph ON ph.id = pp1.pihak_id
+        JOIN pihak ph1 ON ph1.id = pp1.pihak_id
         WHERE pp1.perkara_id = p.perkara_id
         ORDER BY pp1.urutan ASC, pp1.id ASC
         LIMIT 1
       ) AS pekerjaan_pihak1,
       (
-        SELECT ph.pekerjaan
+        SELECT ph2.pekerjaan
         FROM perkara_pihak2 pp2
-        JOIN pihak ph ON ph.id = pp2.pihak_id
+        JOIN pihak ph2 ON ph2.id = pp2.pihak_id
         WHERE pp2.perkara_id = p.perkara_id
         ORDER BY pp2.urutan ASC, pp2.id ASC
         LIMIT 1
-      ) AS pekerjaan_pihak2
+      ) AS pekerjaan_pihak2,
+      (
+        SELECT COUNT(*) FROM perkara_anak_pihak pap
+        WHERE pap.perkara_id = p.perkara_id
+      ) AS anak_count,
+      (
+        SELECT SUM(pap.jumlah_nafkah) FROM perkara_anak_pihak pap
+        WHERE pap.perkara_id = p.perkara_id
+          AND pap.jumlah_nafkah IS NOT NULL
+      ) AS anak_jumlah_nafkah_sum
     FROM perkara p
-    LEFT JOIN perkara_putusan pp ON pp.perkara_id = p.perkara_id
+    INNER JOIN perkara_putusan pp ON pp.perkara_id = p.perkara_id
     LEFT JOIN perkara_akta_cerai ac ON ac.perkara_id = p.perkara_id
+    LEFT JOIN perkara_pertimbangan_hukum ph ON ph.perkara_id = p.perkara_id
     WHERE (${keywordConds.join(" OR ")})
+    ${mustHavePutusan}
     ${bhtClause}
+    ${nafkahClause}
     ${dateClause}
-    ORDER BY p.tanggal_pendaftaran DESC, p.perkara_id DESC
+    ORDER BY
+      CASE WHEN pp.tanggal_bht IS NULL THEN 1 ELSE 0 END,
+      COALESCE(pp.tanggal_putusan, p.tanggal_pendaftaran) DESC,
+      p.perkara_id DESC
     LIMIT :limit
   `;
 
   assertSelectOnly(sql);
   const pool = getSippLocalPool();
   const [rows] = await pool.query<RowDataPacket[]>(sql, params);
-  return rows.map((r) => ({
-    perkara_id: Number(r.perkara_id),
-    nomor_perkara: String(r.nomor_perkara || ""),
-    tanggal_pendaftaran: r.tanggal_pendaftaran ? String(r.tanggal_pendaftaran) : null,
-    jenis_perkara_nama: r.jenis_perkara_nama ? String(r.jenis_perkara_nama) : null,
-    jenis_perkara_text: r.jenis_perkara_text ? String(r.jenis_perkara_text) : null,
-    proses_terakhir_id: r.proses_terakhir_id != null ? Number(r.proses_terakhir_id) : null,
-    proses_terakhir_text: r.proses_terakhir_text ? String(r.proses_terakhir_text) : null,
-    tahapan_terakhir_id: r.tahapan_terakhir_id != null ? Number(r.tahapan_terakhir_id) : null,
-    tahapan_terakhir_text: r.tahapan_terakhir_text ? String(r.tahapan_terakhir_text) : null,
-    pihak1_text: r.pihak1_text != null ? String(r.pihak1_text) : null,
-    pihak2_text: r.pihak2_text != null ? String(r.pihak2_text) : null,
-    pihak_dipublikasikan: r.pihak_dipublikasikan != null ? String(r.pihak_dipublikasikan) : null,
-    tanggal_putusan: r.tanggal_putusan ? String(r.tanggal_putusan) : null,
-    tanggal_minutasi: r.tanggal_minutasi ? String(r.tanggal_minutasi) : null,
-    tanggal_bht: r.tanggal_bht ? String(r.tanggal_bht) : null,
-    putusan_verstek: r.putusan_verstek != null ? String(r.putusan_verstek) : null,
-    status_putusan_nama: r.status_putusan_nama ? String(r.status_putusan_nama) : null,
-    amar_excerpt: r.amar_excerpt ? String(r.amar_excerpt) : null,
-    nomor_akta_cerai: r.nomor_akta_cerai ? String(r.nomor_akta_cerai) : null,
-    tgl_akta_cerai: r.tgl_akta_cerai ? String(r.tgl_akta_cerai) : null,
-    tgl_penyerahan_akta_cerai: r.tgl_penyerahan_akta_cerai
-      ? String(r.tgl_penyerahan_akta_cerai)
-      : null,
-    jenis_cerai: r.jenis_cerai ? String(r.jenis_cerai) : null,
-    pekerjaan_pihak1: r.pekerjaan_pihak1 ? String(r.pekerjaan_pihak1) : null,
-    pekerjaan_pihak2: r.pekerjaan_pihak2 ? String(r.pekerjaan_pihak2) : null,
-  }));
+
+  return rows.map((r) => {
+    const tanggal_bht = r.tanggal_bht ? String(r.tanggal_bht) : null;
+    const proses = r.proses_terakhir_text ? String(r.proses_terakhir_text) : null;
+    const has_akta = Boolean(Number(r.has_akta));
+    const amar_char_count = Number(r.amar_char_count ?? 0);
+    const amar_excerpt = r.amar_excerpt ? String(r.amar_excerpt) : null;
+    const anak_sum =
+      r.anak_jumlah_nafkah_sum != null ? Number(r.anak_jumlah_nafkah_sum) : null;
+    const nafkah_signal =
+      anak_sum != null && anak_sum > 0
+        ? true
+        : /nafkah|iddah|mut.?ah|mutah|hadhanah|madhiyah/i.test(
+            `${amar_excerpt || ""} ${r.petitum_excerpt || ""} ${r.posita_excerpt || ""}`,
+          );
+
+    return {
+      perkara_id: Number(r.perkara_id),
+      nomor_perkara: String(r.nomor_perkara || ""),
+      tanggal_pendaftaran: r.tanggal_pendaftaran
+        ? String(r.tanggal_pendaftaran)
+        : null,
+      jenis_perkara_nama: r.jenis_perkara_nama
+        ? String(r.jenis_perkara_nama)
+        : null,
+      jenis_perkara_text: r.jenis_perkara_text
+        ? String(r.jenis_perkara_text)
+        : null,
+      proses_terakhir_id:
+        r.proses_terakhir_id != null ? Number(r.proses_terakhir_id) : null,
+      proses_terakhir_text: proses,
+      tahapan_terakhir_id:
+        r.tahapan_terakhir_id != null ? Number(r.tahapan_terakhir_id) : null,
+      tahapan_terakhir_text: r.tahapan_terakhir_text
+        ? String(r.tahapan_terakhir_text)
+        : null,
+      pihak1_text: r.pihak1_text != null ? String(r.pihak1_text) : null,
+      pihak2_text: r.pihak2_text != null ? String(r.pihak2_text) : null,
+      pihak_dipublikasikan:
+        r.pihak_dipublikasikan != null ? String(r.pihak_dipublikasikan) : null,
+      tanggal_putusan: r.tanggal_putusan ? String(r.tanggal_putusan) : null,
+      tanggal_minutasi: r.tanggal_minutasi ? String(r.tanggal_minutasi) : null,
+      tanggal_bht,
+      putusan_verstek: r.putusan_verstek != null ? String(r.putusan_verstek) : null,
+      status_putusan_nama: r.status_putusan_nama
+        ? String(r.status_putusan_nama)
+        : null,
+      amar_excerpt,
+      amar_char_count,
+      amar_truncated: amar_char_count > AMAR_FETCH_CHARS,
+      petitum_excerpt: r.petitum_excerpt ? String(r.petitum_excerpt) : null,
+      posita_excerpt: r.posita_excerpt ? String(r.posita_excerpt) : null,
+      pertimbangan_excerpt: r.pertimbangan_excerpt
+        ? String(r.pertimbangan_excerpt)
+        : null,
+      nomor_akta_cerai: r.nomor_akta_cerai ? String(r.nomor_akta_cerai) : null,
+      tgl_akta_cerai: r.tgl_akta_cerai ? String(r.tgl_akta_cerai) : null,
+      tgl_penyerahan_akta_cerai: r.tgl_penyerahan_akta_cerai
+        ? String(r.tgl_penyerahan_akta_cerai)
+        : null,
+      jenis_cerai: r.jenis_cerai ? String(r.jenis_cerai) : null,
+      pekerjaan_pihak1: r.pekerjaan_pihak1 ? String(r.pekerjaan_pihak1) : null,
+      pekerjaan_pihak2: r.pekerjaan_pihak2 ? String(r.pekerjaan_pihak2) : null,
+      anak_count: Number(r.anak_count ?? 0),
+      anak_jumlah_nafkah_sum: anak_sum,
+      bht_basis: resolveBhtBasis({ tanggal_bht, has_akta, proses }),
+      nafkah_signal,
+    };
+  });
 }

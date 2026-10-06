@@ -20,6 +20,9 @@ type SyncResult = {
   skippedNonBht?: number;
   truncated?: boolean;
   note?: string;
+  bhtMode?: string;
+  requireNafkah?: boolean;
+  withTanggalBht?: number;
   modusDetect?: {
     scanned: number;
     withSuggestions: number;
@@ -32,8 +35,11 @@ type SyncResult = {
     jenis_perkara: string | null;
     status_perkara: string | null;
     tanggal_bht?: string | null;
+    bht_basis?: string;
+    nafkah_signal?: boolean;
     action: string;
     modus_suggested?: string[];
+    objek_suggested?: string[];
   }>;
 };
 
@@ -52,9 +58,12 @@ export function SippImportPanel() {
   const [dateFrom, setDateFrom] = useState("01 Jan 2024");
   const [dateTo, setDateTo] = useState("");
   const [localDateFrom, setLocalDateFrom] = useState("2024-01-01");
-  const [localDateTo, setLocalDateTo] = useState("");
+  const [localDateTo, setLocalDateTo] = useState("2026-12-31");
   const [maxPages, setMaxPages] = useState(8);
   const [localLimit, setLocalLimit] = useState(500);
+  const [bhtMode, setBhtMode] = useState<"strict" | "prefer" | "none">("strict");
+  const [requireNafkah, setRequireNafkah] = useState(true);
+  const [dateField, setDateField] = useState<"putusan" | "pendaftaran">("putusan");
   const [nomor, setNomor] = useState("");
   const [items, setItems] = useState<Item[]>([]);
   const [msg, setMsg] = useState("");
@@ -109,7 +118,9 @@ export function SippImportPanel() {
         keywords: localKeywords,
         dateFrom: localDateFrom || null,
         dateTo: localDateTo || null,
-        onlyBht: true,
+        bhtMode,
+        requireNafkah,
+        dateField,
         limit: localLimit,
         refreshExisting: true,
       }),
@@ -244,11 +255,11 @@ export function SippImportPanel() {
       <section className="panel hero">
         <h2>Sinkron SIPP Lokal (MySQL/MariaDB)</h2>
         <p style={{ color: "var(--ink)" }}>
-          Ambil perkara BHT/final langsung dari database SIPP satker (skema{" "}
-          <span className="mono">sipp32</span>) — metadata: tanggal_bht, tahapan/proses,
-          verstek, cuplikan amar, akta cerai, pekerjaan pihak. Setelah sync, sistem
-          menjalankan <strong>usulan otomatis modus</strong> (heuristik) — bukan koding
-          final; konfirmasi di workspace. Nama pihak tetap disamarkan.
+          Impor <strong>metadata akurat</strong> untuk kandidat berkas tesis (Cerai Gugat/Talak
+          2024–2026 + sinyal nafkah). BHT ground truth ={" "}
+          <span className="mono">perkara_putusan.tanggal_bht</span>. Setelah sync: usulan
+          terbatas (verstek flag, pekerjaan pihak, objek nafkah di teks) — bukan koding final.
+          Nominal iddah/mut&apos;ah &amp; modus tadlis tetap dari putusan/PDF.
         </p>
         {localStatus ? (
           <p className="muted">
@@ -268,7 +279,7 @@ export function SippImportPanel() {
           <p className="muted">Memeriksa konfigurasi SIPP_ENABLED / SIPP_HOST…</p>
         )}
         <form onSubmit={syncLocal}>
-          <label>Kata kunci (jenis perkara / nomor — pisahkan koma)</label>
+          <label>Kata kunci jenis perkara (default proposal — boleh diedit)</label>
           <input
             value={localKeywords}
             onChange={(e) => setLocalKeywords(e.target.value)}
@@ -277,7 +288,7 @@ export function SippImportPanel() {
           />
           <div className="grid-2">
             <div>
-              <label>Tanggal pendaftaran dari</label>
+              <label>Tanggal dari</label>
               <input
                 value={localDateFrom}
                 onChange={(e) => setLocalDateFrom(e.target.value)}
@@ -285,14 +296,50 @@ export function SippImportPanel() {
               />
             </div>
             <div>
-              <label>Tanggal pendaftaran sampai</label>
+              <label>Tanggal sampai</label>
               <input
                 value={localDateTo}
                 onChange={(e) => setLocalDateTo(e.target.value)}
-                placeholder="kosong = tanpa batas"
+                placeholder="2026-12-31"
               />
             </div>
           </div>
+          <div className="grid-2">
+            <div>
+              <label>Field tanggal filter</label>
+              <select
+                value={dateField}
+                onChange={(e) =>
+                  setDateField(e.target.value as "putusan" | "pendaftaran")
+                }
+              >
+                <option value="putusan">tanggal_putusan (disarankan, ≈ tahun dokumen)</option>
+                <option value="pendaftaran">tanggal_pendaftaran</option>
+              </select>
+            </div>
+            <div>
+              <label>Mode BHT</label>
+              <select
+                value={bhtMode}
+                onChange={(e) =>
+                  setBhtMode(e.target.value as "strict" | "prefer" | "none")
+                }
+              >
+                <option value="strict">strict — hanya tanggal_bht terisi</option>
+                <option value="prefer">prefer — BHT atau proxy akta/proses (ditandai)</option>
+                <option value="none">none — tanpa filter BHT (proposal literal)</option>
+              </select>
+            </div>
+          </div>
+          <label>
+            <input
+              type="checkbox"
+              checked={requireNafkah}
+              onChange={(e) => setRequireNafkah(e.target.checked)}
+            />{" "}
+            Wajib sinyal nafkah (amar/petitum/posita mengandung nafkah/iddah/mut&apos;ah/hadhanah,
+            atau <span className="mono">anak.jumlah_nafkah</span> &gt; 0)
+          </label>
           <label>Batas jumlah perkara (LIMIT)</label>
           <input
             type="number"
@@ -302,9 +349,9 @@ export function SippImportPanel() {
             onChange={(e) => setLocalLimit(Number(e.target.value) || 500)}
           />
           <p className="muted">
-            Filter BHT: perkara_putusan.tanggal_bht tidak kosong, atau ada
-            perkara_akta_cerai, atau proses terakhir mengandung Akta Cerai/BHT/Berkekuatan.
-            Hanya SELECT.
+            Diimpor: identitas, tanggal putusan/BHT/minutasi, verstek, amar (~12k char),
+            petitum/posita/pertimbangan (cuplikan), pekerjaan pihak, jumlah_nafkah anak.
+            Tidak ada kolom SIPP untuk nominal iddah/mut&apos;ah atau ex officio.
           </p>
           <div className="actions">
             <button className="btn" type="submit" disabled={anyBusy}>
@@ -353,9 +400,10 @@ export function SippImportPanel() {
                   <tr>
                     <th>Nomor</th>
                     <th>Jenis</th>
-                    <th>Status</th>
                     <th>tgl BHT</th>
-                    <th>Usulan modus</th>
+                    <th>Basis BHT</th>
+                    <th>Nafkah</th>
+                    <th>Usulan</th>
                     <th>Aksi</th>
                   </tr>
                 </thead>
@@ -364,12 +412,20 @@ export function SippImportPanel() {
                     <tr key={s.nomor_perkara + s.action}>
                       <td className="mono">{s.nomor_perkara}</td>
                       <td>{s.jenis_perkara}</td>
-                      <td>{s.status_perkara}</td>
                       <td className="mono">{s.tanggal_bht || "—"}</td>
+                      <td>
+                        <span
+                          className={`badge ${s.bht_basis === "tanggal_bht" ? "ok" : "warn"}`}
+                        >
+                          {s.bht_basis || "—"}
+                        </span>
+                      </td>
+                      <td>{s.nafkah_signal ? "ya" : "—"}</td>
                       <td className="muted">
-                        {s.modus_suggested?.length
-                          ? s.modus_suggested.join(", ")
-                          : "—"}
+                        {[
+                          ...(s.modus_suggested || []),
+                          ...(s.objek_suggested || []).map((x) => `obj:${x}`),
+                        ].join(", ") || "—"}
                       </td>
                       <td>
                         <span className="badge">{s.action}</span>

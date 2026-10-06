@@ -19,7 +19,8 @@ export default function PerkaraPage() {
         <h1>Workspace koding berkas</h1>
         <p style={{ color: "var(--ink)" }}>
           Unit analisis dokumen (Lampiran 1C): field naratif + checklist operasional.
-          Sinkron SIPP = metadata akurat; modus dalam / nominal iddah biasanya dari putusan PDF.
+          Sinkron SIPP mengimpor metadata + nominal iddah/mut&apos;ah/anak + path PDF putusan.
+          Modus dalam (tadlis/gaya hidup) dan maqasid tetap analisis peneliti.
         </p>
         <div className="actions">
           <Link className="btn" href="/perkara/impor">

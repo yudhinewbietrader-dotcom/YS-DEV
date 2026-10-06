@@ -245,12 +245,12 @@ export function SippImportPanel() {
               </span>
             ) : (
               <span className="badge warn">
-                belum siap — {localStatus.probe?.error || "isi SIPP_DB_* di .env.local"}
+                belum siap — {localStatus.probe?.error || "isi SIPP_ENABLED + SIPP_HOST/USER/PASSWORD/DB di .env.local"}
               </span>
             )}
           </p>
         ) : (
-          <p className="muted">Memeriksa konfigurasi SIPP_DB_*…</p>
+          <p className="muted">Memeriksa konfigurasi SIPP_ENABLED / SIPP_HOST…</p>
         )}
         <form onSubmit={syncLocal}>
           <label>Kata kunci (jenis perkara / nomor — pisahkan koma)</label>

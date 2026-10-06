@@ -44,7 +44,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         error: msg,
-        hint: "Pastikan SIPP_DB_* di .env.local benar dan MariaDB SIPP dapat dijangkau dari mesin ini. Alternatif: Sinkron BHT publik atau impor CSV.",
+        hint: "Pastikan SIPP_ENABLED=true dan SIPP_HOST/USER/PASSWORD/DB (pola WA-gateway) di .env.local, MariaDB dapat dijangkau. Alternatif: Sinkron BHT publik atau impor CSV.",
       },
       { status: 502 },
     );

@@ -1,13 +1,15 @@
 /**
  * Klien read-only ke MariaDB/MySQL SIPP lokal (database tipikal: sipp32).
  *
- * WA-gateway / wabot sinkron SIPP tidak ditemukan di YS-DEV maupun repo publik
- * owner yang sama (saat penelusuran). Mapping tabel/kolom diturunkan dari
- * `sipp32.sql` di root repo — lihat docs/sipp-lokal-sync.md.
+ * Env primer mengikuti pola WA-gateway:
+ *   SIPP_ENABLED, SIPP_HOST, SIPP_PORT, SIPP_DB, SIPP_USER, SIPP_PASSWORD, SIPP_CHARSET
+ * Alias tambahan: SIPP_DB_* dan DB_* (lihat .env.example).
+ *
+ * Mapping tabel/kolom: sipp32.sql — docs/sipp-lokal-sync.md
  *
  * Keamanan:
  * - Hanya SELECT (assertSelectOnly)
- * - Kredensial dari env user (SIPP_DB_*)
+ * - Kredensial dari env user — jangan commit password
  * - Tidak ada bypass SIPP web
  */
 
@@ -20,6 +22,7 @@ export type SippLocalConfig = {
   user: string;
   password: string;
   database: string;
+  charset: string;
 };
 
 export type SippLocalCase = {
@@ -47,24 +50,41 @@ export type SippLocalCase = {
   jenis_cerai: string | null;
 };
 
-const globalForSipp = globalThis as unknown as { __sippLocalPool?: Pool };
+const globalForSipp = globalThis as unknown as {
+  __sippLocalPool?: Pool;
+  __sippLocalPoolKey?: string;
+};
+
+function truthyEnv(raw: string | undefined): boolean {
+  const v = (raw || "").toLowerCase().trim();
+  return v === "1" || v === "true" || v === "yes" || v === "y" || v === "on";
+}
+
+function firstEnv(...keys: string[]): string {
+  for (const k of keys) {
+    const v = process.env[k];
+    if (v != null && String(v).trim() !== "") return String(v).trim();
+  }
+  return "";
+}
 
 export function getSippLocalConfig(): SippLocalConfig {
-  const enabledRaw = (process.env.SIPP_DB_ENABLED || "").toLowerCase();
-  const host = process.env.SIPP_DB_HOST || process.env.DB_HOST || "";
-  const user = process.env.SIPP_DB_USER || process.env.DB_USER || "";
-  const password = process.env.SIPP_DB_PASSWORD || process.env.DB_PASSWORD || "";
+  // Primer: pola WA-gateway; lalu SIPP_DB_*; lalu DB_*
+  const enabledFlag = firstEnv("SIPP_ENABLED", "SIPP_DB_ENABLED");
+  const host = firstEnv("SIPP_HOST", "SIPP_DB_HOST", "DB_HOST");
+  const user = firstEnv("SIPP_USER", "SIPP_DB_USER", "DB_USER");
+  const password = firstEnv("SIPP_PASSWORD", "SIPP_DB_PASSWORD", "DB_PASSWORD");
   const database =
-    process.env.SIPP_DB_NAME || process.env.DB_NAME || process.env.DB_DATABASE || "sipp32";
-  const port = Number(process.env.SIPP_DB_PORT || process.env.DB_PORT || 3306);
+    firstEnv("SIPP_DB", "SIPP_DB_NAME", "DB_NAME", "DB_DATABASE") || "sipp32";
+  const port = Number(firstEnv("SIPP_PORT", "SIPP_DB_PORT", "DB_PORT") || 3306);
+  const charset = firstEnv("SIPP_CHARSET", "SIPP_DB_CHARSET") || "latin1";
 
-  const enabled =
-    enabledRaw === "1" ||
-    enabledRaw === "true" ||
-    enabledRaw === "yes" ||
-    (enabledRaw === "" && Boolean(host && user));
+  const enabledExplicit = enabledFlag !== "";
+  const enabled = enabledExplicit
+    ? truthyEnv(enabledFlag)
+    : Boolean(host && user);
 
-  return { enabled, host, port, user, password, database };
+  return { enabled, host, port, user, password, database, charset };
 }
 
 export function assertSelectOnly(sql: string) {
@@ -88,9 +108,16 @@ export function getSippLocalPool(): Pool {
   const cfg = getSippLocalConfig();
   if (!cfg.enabled || !cfg.host || !cfg.user) {
     throw new Error(
-      "SIPP lokal belum dikonfigurasi. Isi SIPP_DB_ENABLED=true dan SIPP_DB_HOST/USER/PASSWORD/NAME di .env.local.",
+      "SIPP lokal belum dikonfigurasi. Isi SIPP_ENABLED=true dan SIPP_HOST / SIPP_USER / SIPP_PASSWORD / SIPP_DB di .env.local (pola WA-gateway).",
     );
   }
+
+  const poolKey = `${cfg.host}:${cfg.port}/${cfg.database}/${cfg.user}/${cfg.charset}`;
+  if (globalForSipp.__sippLocalPool && globalForSipp.__sippLocalPoolKey !== poolKey) {
+    void globalForSipp.__sippLocalPool.end().catch(() => undefined);
+    globalForSipp.__sippLocalPool = undefined;
+  }
+
   if (!globalForSipp.__sippLocalPool) {
     globalForSipp.__sippLocalPool = mysql.createPool({
       host: cfg.host,
@@ -101,12 +128,11 @@ export function getSippLocalPool(): Pool {
       waitForConnections: true,
       connectionLimit: 4,
       namedPlaceholders: true,
-      // sesuaikan charset umum SIPP
-      charset: "utf8mb4",
+      charset: cfg.charset || "latin1",
       dateStrings: true,
-      // fail fast
       connectTimeout: 10000,
     });
+    globalForSipp.__sippLocalPoolKey = poolKey;
   }
   return globalForSipp.__sippLocalPool;
 }
@@ -120,7 +146,7 @@ export async function testSippLocalConnection(): Promise<{
 }> {
   const cfg = getSippLocalConfig();
   if (!cfg.enabled) {
-    return { ok: false, database: cfg.database, host: cfg.host, error: "SIPP_DB_ENABLED tidak aktif" };
+    return { ok: false, database: cfg.database, host: cfg.host, error: "SIPP_ENABLED tidak aktif" };
   }
   try {
     const pool = getSippLocalPool();

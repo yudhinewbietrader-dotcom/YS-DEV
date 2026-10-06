@@ -37,12 +37,10 @@ npm start
 
 ### A. SIPP lokal (disarankan)
 
-Baca langsung MariaDB/MySQL satker (skema `sipp32`) lewat env `SIPP_DB_*`.  
-Panduan mapping tabel: lihat Agent Store [`docs/sipp-lokal-sync.md`](./sipp-lokal-sync.md) (atau mirror di repo docs bila disalin).
+Baca langsung MariaDB/MySQL satker (skema `sipp32`) lewat env **WA-gateway**:
+`SIPP_ENABLED`, `SIPP_HOST`, `SIPP_PORT`, `SIPP_DB`, `SIPP_USER`, `SIPP_PASSWORD`, `SIPP_CHARSET=latin1`.
 
 Tombol UI: **Sinkron SIPP Lokal** di `/perkara/impor`.
-
-Field lebih kaya vs publik: `tanggal_bht`, tahapan/proses, verstek, cuplikan `amar_putusan`, nomor/tanggal akta cerai.
 
 ### B. SIPP publik (cadangan)
 
